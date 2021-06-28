@@ -103,3 +103,12 @@ class EnvironmentVariables:
             return json.loads(tf_config_env)
         else:
             return None
+
+    @property
+    def tf_profiler_port(self) -> Optional[str]:
+        """
+        Returns:
+            Profiler port used for capturing profiling samples
+            None if environment variable is not set.
+        """
+        return os.environ.get("AIP_TF_PROFILER_PORT")

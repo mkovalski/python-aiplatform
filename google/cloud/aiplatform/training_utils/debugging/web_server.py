@@ -19,11 +19,12 @@
 
 import os
 
-from google.cloud.aiplatform.training_utils import plugins
+from google.cloud.aiplatform.training_utils.debugging.plugins import base_plugin
 from typing import List
+from werkzeug import wrappers
 
 
-def create_web_server(plugins: List[plugins.BasePlugin]):
+def create_web_server(plugins: List[base_plugin.BasePlugin]):
     """Create plugins and return a web app."""
     debugging_plugins = []
 

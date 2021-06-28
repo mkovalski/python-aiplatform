@@ -16,3 +16,4 @@
 #
 
 from google.cloud.aiplatform.training_utils.environment_variables import EnvironmentVariables
+from google.cloud.aiplatform.training_utils.debugging import start_debugger

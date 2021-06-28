@@ -64,7 +64,7 @@ def _get_tf_versioning() -> Optional[Version]:
                    int(versioning[1]),
                    int(versioning[2]))
 
-def _is_incompatible_version(version: Version) -> bool:
+def _is_compatible_version(version: Version) -> bool:
     """Check if version is compatible with tf profiling.
 
     Profiling plugin is available to be used for version >= 2.2.0.
@@ -170,7 +170,7 @@ class TFProfiler(base_plugin.BasePlugin):
         # Create a temporary directory to store the profiler logs. This is done so
         # that any logs created will be fully written out before the tensorboard
         # log uploader picks them up.
-
+        self.profile_plugin.logdir = _ENV_VARS.tensorboard_log_dir
         response = self.profile_plugin.capture_route(environ, start_response)
         return response
 
@@ -212,7 +212,7 @@ class TFProfiler(base_plugin.BasePlugin):
         if not version:
             return False
 
-        if __is_incompatible_version(version):
+        if not _is_compatible_version(version):
             logging.warning('Version %s is incompatible with tf profiler.'
                             'To use the profiler, choose a version >= 2.2.0',
                             version)
