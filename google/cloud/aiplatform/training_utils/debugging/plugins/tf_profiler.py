@@ -22,8 +22,10 @@ from collections import namedtuple
 import json
 import logging
 import os
+import re
+import tempfile
 from tensorboard.plugins.base_plugin import TBContext
-from typing import Dict, Optional, Tuple
+from typing import Dict, Optional
 from urllib import parse
 from werkzeug import wrappers
 
@@ -36,6 +38,7 @@ Version = namedtuple('Version', ['major', 'minor', 'patch'])
 
 # Environment variables from training jobs.
 _ENV_VARS = EnvironmentVariables()
+
 
 def _tf_installed() -> bool:
     """Helper function to determine if tensorflow is installed."""
@@ -68,18 +71,25 @@ def _is_compatible_version(version: Version) -> bool:
     """Check if version is compatible with tf profiling.
 
     Profiling plugin is available to be used for version >= 2.2.0.
+
+    Args:
+        version: `Verison` of tensorflow.
+
+    Returns:
+        If compatible with profiler.
     """
     if version.major >= 2 and version.minor >= 2:
         return True
+    logging.warning('Tensorflow version is not compatible with TF profiler')
     return False
 
-def _create_debugging_context() -> TBContext:
+def _create_profiling_context() -> TBContext:
     """Creates the base context needed for TB Profiler."""
 
     context_flags = argparse.Namespace(
         master_tpu_unsecure_channel=None)
 
-    context = TBContext(logdir=None,
+    context = TBContext(logdir=_ENV_VARS.tensorboard_log_dir,
                         multiplexer=None,
                         flags=context_flags)
 
@@ -93,8 +103,8 @@ def _check_cluster_spec() -> Optional[str]:
 def _host_to_grpc(hostname: str) -> str:
     return 'grpc://' + ''.join(hostname.split(':')[:-1]) + ':' + _ENV_VARS.tf_profiler_port
 
-def _get_hosts_list() -> Optional[str]:
-    """Get the service address from an environment variable."""
+def _get_master_host() -> Optional[str]:
+    """Get the master service address from an environment variable."""
     cluster_spec = _get_cluster_spec()
     if not cluster_spec:
         return
@@ -107,15 +117,7 @@ def _get_hosts_list() -> Optional[str]:
     if not host_list:
         return
 
-    # If no workers, this is OK. Dealing with single host.
-    worker_list = cluster.get('worker', [])
-
-    host_list.extend(worker_list)
-
-    for i in range(len(host_list)):
-        host_list[i] = _host_to_grpc(host_list[i])
-
-    return host_list
+    return host_list[0]
 
 def _get_cluster_spec() -> Optional[Dict[str, str]]:
     '''Get the cluster spec so we can profile multiple workers.'''
@@ -124,13 +126,13 @@ def _get_cluster_spec() -> Optional[Dict[str, str]]:
 
 def _update_environ(environ) -> str:
     """Add parameters to the query that are retrieved from training side."""
-    hosts = _get_hosts_list()
+    host = _get_master_host()
 
-    if not hosts:
-      return 'Could not get the hosts list'
+    if not host:
+      return 'Could not get the master host'
 
     query_dict = {}
-    query_dict['service_addr'] = ','.join(hosts)
+    query_dict['service_addr'] = host
 
     # Update service address and worker list
     # Use parse_qsl and then convert list to dictionary so we can update
@@ -142,13 +144,14 @@ def _update_environ(environ) -> str:
 
     return ''
 
+
 class TFProfiler(base_plugin.BasePlugin):
     """Handler for Tensorflow Profiling."""
     PLUGIN_NAME = 'profile'
 
     def __init__(self):
         from tensorboard_plugin_profile.profile_plugin import ProfilePlugin
-        context = _create_debugging_context()
+        context = _create_profiling_context()
         self.profile_plugin = ProfilePlugin(context)
 
     def get_routes(self):
@@ -167,11 +170,8 @@ class TFProfiler(base_plugin.BasePlugin):
                                          content_type = 'application/json',
                                          status = 500)
 
-        # Create a temporary directory to store the profiler logs. This is done so
-        # that any logs created will be fully written out before the tensorboard
-        # log uploader picks them up.
-        self.profile_plugin.logdir = _ENV_VARS.tensorboard_log_dir
         response = self.profile_plugin.capture_route(environ, start_response)
+
         return response
 
     # End routes
@@ -194,8 +194,7 @@ class TFProfiler(base_plugin.BasePlugin):
         # Check that AI Platform service set a port for TF profiling
         if _ENV_VARS.tf_profiler_port is None:
             logging.warning('"%s" environment variable not set, cannot enable profiling.',
-                           _ENV_VARS.tf_profiler_port,
-                           RuntimeWarning)
+                           _ENV_VARS.tf_profiler_port)
             return False
 
         # Check that a log directory was specified
@@ -223,15 +222,14 @@ class TFProfiler(base_plugin.BasePlugin):
 
         cluster_spec_error = _check_cluster_spec()
         if cluster_spec_error:
-            warnings.warn(cluster_spec_error)
+            logging.warning(cluster_spec_error)
             return False
 
         # Check for the tf profiler plugin
         try:
             from tensorboard_plugin_profile.profile_plugin import ProfilePlugin
         except ImportError as e:
-          logging.warning("Could not import tensorboard_plugin_profile, will not run tf profiling service",
-                          RuntimeWarning)
+          logging.warning("Could not import tensorboard_plugin_profile, will not run tf profiling service")
           return False
 
         return True
