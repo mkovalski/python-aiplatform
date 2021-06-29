@@ -117,7 +117,7 @@ def _get_master_host() -> Optional[str]:
     if not host_list:
         return
 
-    return host_list[0]
+    return _host_to_grpc(host_list[0])
 
 def _get_cluster_spec() -> Optional[Dict[str, str]]:
     '''Get the cluster spec so we can profile multiple workers.'''
