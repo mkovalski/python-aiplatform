@@ -25,6 +25,7 @@ import os
 from tensorboard.plugins.base_plugin import TBContext
 from typing import Dict, Optional
 from urllib import parse
+import importlib.util
 from werkzeug import wrappers
 
 from google.cloud.aiplatform.training_utils import EnvironmentVariables
@@ -42,9 +43,7 @@ logger = logging.Logger("tf-profiler")
 
 def _tf_installed() -> bool:
     """Helper function to determine if tensorflow is installed."""
-    try:
-        import tensorflow as tf
-    except ImportError:
+    if not importlib.util.find_spec('tensorflow'):
         logger.warning("Could not import tensorflow, will not run tf profiling service")
         return False
     return True
@@ -266,9 +265,7 @@ class TFProfiler(base_plugin.BasePlugin):
             return False
 
         # Check for the tf profiler plugin
-        try:
-            from tensorboard_plugin_profile.profile_plugin import ProfilePlugin
-        except ImportError:
+        if not importlib.util.find_spec('tensorboard_plugin_profile'):
             logger.warning(
                 "Could not import tensorboard_plugin_profile, will not run tf profiling service"
             )
