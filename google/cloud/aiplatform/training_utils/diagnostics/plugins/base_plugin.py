@@ -29,9 +29,9 @@ from urllib.parse import urlencode
 from werkzeug import wrappers
 
 class BasePlugin(abc.ABC):
-    """Base plugin for debugging endpoints.
+    """Base plugin for diagnostics endpoints.
 
-    The plugins support registering http handlers to be used for debugging
+    The plugins support registering http handlers to be used for
     AI Platform training jobs.
     """
 

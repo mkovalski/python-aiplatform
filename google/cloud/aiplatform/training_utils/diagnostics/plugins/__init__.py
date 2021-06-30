@@ -15,5 +15,5 @@
 # limitations under the License.
 #
 
-from google.cloud.aiplatform.training_utils.debugging.plugins import tf_profiler
-from google.cloud.aiplatform.training_utils.debugging.plugins import base_plugin
+from google.cloud.aiplatform.training_utils.diagnostics.plugins import tf_profiler
+from google.cloud.aiplatform.training_utils.diagnostics.plugins import base_plugin

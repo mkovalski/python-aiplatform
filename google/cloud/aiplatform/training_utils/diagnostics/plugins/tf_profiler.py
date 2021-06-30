@@ -30,7 +30,7 @@ from urllib import parse
 from werkzeug import wrappers
 
 from google.cloud.aiplatform.training_utils import EnvironmentVariables
-from google.cloud.aiplatform.training_utils.debugging.plugins import base_plugin
+from google.cloud.aiplatform.training_utils.diagnostics.plugins import base_plugin
 
 
 # Simple namedtuple for tf verison information.
