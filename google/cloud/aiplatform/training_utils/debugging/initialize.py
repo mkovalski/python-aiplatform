@@ -33,6 +33,7 @@ class Plugins(Enum):
     TF_PROFILER = 1
 
 MAP_TO_PLUGIN = {Plugins.TF_PROFILER: tf_profiler.TFProfiler}
+ALL_PLUGINS = list(MAP_TO_PLUGIN)
 
 
 def _run_webserver(plugins, port): # pragma: no cover
@@ -49,7 +50,7 @@ def _run_app_thread(plugins: List[Plugins],
     daemon.setDaemon(True)
     daemon.start()
 
-def start_debugger(plugins: Optional[List[Plugins]] = None,
+def start_debugger(plugins: Optional[List[Plugins]] = ALL_PLUGINS,
                    port: int = 6010):
     """Initialize the debugging SDK.
 
@@ -62,16 +63,17 @@ def start_debugger(plugins: Optional[List[Plugins]] = None,
       port: A port to serve web requests.
     """
 
-    # Use all plugins if none specified.
-    if not plugins:
-        plugins = [plugin for plugin in Plugins]
 
     valid_plugins = []
 
     plugin_names = set()
 
     for plugin_name in plugins:
-        plugin = MAP_TO_PLUGIN[plugin_name]
+        plugin = MAP_TO_PLUGIN.get(plugin_name, None)
+        if not plugin:
+            logging.warning('Plugin %s does not exist',
+                            plugin_name)
+            continue
 
         if plugin.PLUGIN_NAME in plugin_names:
             logging.warning('Plugin %s already exists, will not load',
