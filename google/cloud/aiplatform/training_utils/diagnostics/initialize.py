@@ -28,7 +28,9 @@ from google.cloud.aiplatform.training_utils.diagnostics.plugins import tf_profil
 
 class Plugins(Enum):
     """List of plugins that are available for diagnostics SDK."""
+
     TF_PROFILER = 1
+
 
 # To add a new plugin, add the plugin to the enum class and add a mapping to the
 # MAP_TO_PLUGIN dictionary.
@@ -36,22 +38,23 @@ class Plugins(Enum):
 MAP_TO_PLUGIN = {Plugins.TF_PROFILER: tf_profiler.TFProfiler}
 ALL_PLUGINS = list(MAP_TO_PLUGIN)
 
+
 def _run_webserver(plugins, port):
     """Run the webserver that hosts the various diagnostics plugins."""
     app = web_server.create_web_server(plugins)
-    serving.run_simple('127.0.0.1', port, app)
+    serving.run_simple("127.0.0.1", port, app)
 
-def _run_app_thread(plugins: List[Plugins],
-                    port: int) -> None:
+
+def _run_app_thread(plugins: List[Plugins], port: int) -> None:
     """Run the diagnostics web server in a separate thread."""
-    daemon = threading.Thread(name='diagnostics_server',
-                              target=_run_webserver,
-                              args = (plugins, port))
+    daemon = threading.Thread(
+        name="diagnostics_server", target=_run_webserver, args=(plugins, port)
+    )
     daemon.setDaemon(True)
     daemon.start()
 
-def start_diagnostics(plugins: Optional[List[Plugins]] = ALL_PLUGINS,
-                   port: int = 6010):
+
+def start_diagnostics(plugins: Optional[List[Plugins]] = ALL_PLUGINS, port: int = 6010):
     """Initialize the diagnostics SDK.
 
     The SDK will initialize the various diagnostic tools
@@ -63,7 +66,6 @@ def start_diagnostics(plugins: Optional[List[Plugins]] = ALL_PLUGINS,
       port: A port to serve web requests.
     """
 
-
     valid_plugins = []
 
     plugin_names = set()
@@ -71,18 +73,17 @@ def start_diagnostics(plugins: Optional[List[Plugins]] = ALL_PLUGINS,
     for plugin_name in plugins:
         plugin = MAP_TO_PLUGIN.get(plugin_name, None)
         if not plugin:
-            logging.warning('Plugin %s does not exist',
-                            plugin_name)
+            logging.warning("Plugin %s does not exist", plugin_name)
             continue
 
         if plugin.PLUGIN_NAME in plugin_names:
-            logging.warning('Plugin %s already exists, will not load',
-                            plugin.PLUGIN_NAME)
+            logging.warning(
+                "Plugin %s already exists, will not load", plugin.PLUGIN_NAME
+            )
             continue
 
         if not plugin.can_initialize():
-            logging.warning('Failed to initialize %s',
-                            plugin_name)
+            logging.warning("Failed to initialize %s", plugin_name)
             continue
 
         plugin.setup()

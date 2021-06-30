@@ -17,3 +17,8 @@
 
 from google.cloud.aiplatform.training_utils.diagnostics.plugins import tf_profiler
 from google.cloud.aiplatform.training_utils.diagnostics.plugins import base_plugin
+
+__all__ = (
+    "tf_profiler",
+    "base_plugin",
+)

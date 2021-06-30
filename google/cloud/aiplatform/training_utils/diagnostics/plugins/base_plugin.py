@@ -16,17 +16,8 @@
 #
 
 import abc
-import argparse
-import json
-import os
-import warnings
+from typing import Dict
 
-from collections import namedtuple
-from google.cloud.aiplatform.training_utils import EnvironmentVariables
-from tensorboard.plugins.base_plugin import TBContext
-from typing import Dict, Optional, Tuple
-from urllib.parse import urlencode
-from werkzeug import wrappers
 
 class BasePlugin(abc.ABC):
     """Base plugin for diagnostics endpoints.
