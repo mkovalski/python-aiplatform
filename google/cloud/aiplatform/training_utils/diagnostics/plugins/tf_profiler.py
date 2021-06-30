@@ -220,7 +220,8 @@ class TFProfiler(base_plugin.BasePlugin):
               Vertex AI when run with tensorboard option.
             - `tensorboard_plugin_profile` must be installed.
             - Tensorflow >= 2.2.0
-            - 'CLUSTER_SPEC' environment variable must be set, set by Vertex AI.
+            - 'CLUSTER_SPEC' environment variable must be set, which is set by Vertex AI.
+                  Details: https://cloud.google.com/vertex-ai/docs/training/distributed-training
         """
 
         # Environment variable checks
@@ -244,7 +245,7 @@ class TFProfiler(base_plugin.BasePlugin):
         if not _tf_installed():
             return False
 
-        # Check tensorflow version, introduced 1.14 >=
+        # Check tensorflow version, introduced 2.2 >=
         version = _get_tf_versioning()
         if not version:
             return False
