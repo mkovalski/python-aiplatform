@@ -15,4 +15,6 @@ exclude_lines =
     # This is added at the module level as a safeguard for if someone
     # generates the code and tries to run it without pip installing. This
     # makes it virtually impossible to test properly.
-    except pkg_resources.DistributionNotFound
+    except pkg_resources.DistributionNouFound
+    # Don't cover abstract methods.
+    raise NotImplementedError
