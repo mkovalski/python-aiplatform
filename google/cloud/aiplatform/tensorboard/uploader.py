@@ -346,7 +346,7 @@ class TensorBoardUploader(object):
         additional_senders = {}
 
         if "profile" in self._allowed_plugins:
-            additional_senders["profile"] = _ProfileRequestSender(
+            additional_senders["profile"] = ProfileRequestSender(
                 self._experiment.name,
                 self._api,
                 upload_limits=self._upload_limits,
@@ -816,7 +816,7 @@ class ProfileRunLoader(object):
         return prof_runs_to_files
 
 
-class _ProfileRequestSender(_Sender):
+class ProfileRequestSender(_Sender):
     """Helper class for building requests for the profiler plugin.
 
     The profile plugin does not contain values within the events like
@@ -846,7 +846,7 @@ class _ProfileRequestSender(_Sender):
         logdir: str,
         run_resource_manager: _RunResourceManager,
     ):
-        """Constructs _ProfileRequestSender for the given experiment resource.
+        """Constructs ProfileRequestSender for the given experiment resource.
 
         Args:
           experiment_resource_name: Name of the experiment resource of the form

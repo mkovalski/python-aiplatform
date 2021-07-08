@@ -256,7 +256,7 @@ def _create_request_sender(
 
     additional_senders = {}
     if use_profile:
-        additional_senders['profile'] = uploader_lib._ProfileRequestSender(
+        additional_senders['profile'] = uploader_lib.ProfileRequestSender(
             experiment_resource_name=experiment_resource_name,
             api=api,
             upload_limits=upload_limits,
@@ -1130,7 +1130,7 @@ class ProfileRequestSenderTest(tf.test.TestCase):
         prof_run_name = 'bad_run_name'
 
         with tempfile.TemporaryDirectory() as logdir:
-          prof_path = os.path.join(logdir, uploader_lib._ProfileRequestSender.PROFILE_DIR)
+          prof_path = os.path.join(logdir, uploader_lib.ProfileRequestSender.PROFILE_DIR)
           os.makedirs(prof_path)
 
           run_path = os.path.join(prof_path, prof_run_name)
@@ -1147,7 +1147,7 @@ class ProfileRequestSenderTest(tf.test.TestCase):
         prof_run_name = '2021_01_01_01_10_10'
 
         with tempfile.TemporaryDirectory() as logdir:
-          prof_path = os.path.join(logdir, uploader_lib._ProfileRequestSender.PROFILE_DIR)
+          prof_path = os.path.join(logdir, uploader_lib.ProfileRequestSender.PROFILE_DIR)
           os.makedirs(prof_path)
 
           run_path = os.path.join(prof_path, prof_run_name)
@@ -1169,7 +1169,7 @@ class ProfileRequestSenderTest(tf.test.TestCase):
         ]
 
         with tempfile.TemporaryDirectory() as logdir:
-            prof_path = os.path.join(logdir, uploader_lib._ProfileRequestSender.PROFILE_DIR)
+            prof_path = os.path.join(logdir, uploader_lib.ProfileRequestSender.PROFILE_DIR)
             os.makedirs(prof_path)
 
             run_paths = [os.path.join(prof_path, prof_run_names[0]),
@@ -1199,7 +1199,7 @@ class ProfileRequestSenderTest(tf.test.TestCase):
         mock_client = _create_mock_client()
 
         with tempfile.TemporaryDirectory() as logdir:
-            prof_path = os.path.join(logdir, uploader_lib._ProfileRequestSender.PROFILE_DIR)
+            prof_path = os.path.join(logdir, uploader_lib.ProfileRequestSender.PROFILE_DIR)
             os.makedirs(prof_path)
 
             run_path = os.path.join(prof_path, prof_run_name)
