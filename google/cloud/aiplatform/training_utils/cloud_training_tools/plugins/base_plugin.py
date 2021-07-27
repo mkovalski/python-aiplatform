@@ -20,7 +20,7 @@ from typing import Dict
 
 
 class BasePlugin(abc.ABC):
-    """Base plugin for diagnostics endpoints.
+    """Base plugin for cloud_training_tools endpoints.
 
     The plugins support registering http handlers to be used for
     AI Platform training jobs.

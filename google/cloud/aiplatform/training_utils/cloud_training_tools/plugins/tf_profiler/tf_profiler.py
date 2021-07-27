@@ -29,7 +29,7 @@ import importlib.util
 from werkzeug import wrappers
 
 from google.cloud.aiplatform.training_utils import EnvironmentVariables
-from google.cloud.aiplatform.training_utils.diagnostics.plugins import base_plugin
+from google.cloud.aiplatform.training_utils.cloud_training_tools.plugins import base_plugin
 
 
 # Simple namedtuple for tf verison information.
@@ -120,7 +120,8 @@ def _host_to_grpc(hostname: str) -> str:
 def _get_master_host() -> Optional[str]:
     """Get the master service address from an environment variable.
 
-    Currently, only profile the master host.
+    Currently, only profile the master host. Note that the cluster config can have
+    either use 'chief' or 'master' as the config name. We try both and 
 
     Returns:
         A master host formatted by `_host_to_grpc`.
@@ -133,7 +134,7 @@ def _get_master_host() -> Optional[str]:
     if not cluster:
         return
 
-    host_list = cluster.get("master", [])
+    host_list = cluster.get("master", []) or cluster.get("chief", [])
     if not host_list:
         return
 
@@ -170,14 +171,14 @@ def _update_environ(environ) -> str:
 class TFProfiler(base_plugin.BasePlugin):
     """Handler for Tensorflow Profiling."""
 
-    PLUGIN_NAME = "profile"
+    PLUGIN_NAME = 'profile'
 
     def __init__(self):
         """Build a TFProfiler object."""
         from tensorboard_plugin_profile.profile_plugin import ProfilePlugin
 
         context = _create_profiling_context()
-        self.profile_plugin = ProfilePlugin(context)
+        self._profile_plugin = ProfilePlugin(context)
 
     def get_routes(self):
         """List of routes to serve."""
@@ -195,7 +196,7 @@ class TFProfiler(base_plugin.BasePlugin):
                 json.dumps(err), content_type="application/json", status=500
             )
 
-        response = self.profile_plugin.capture_route(environ, start_response)
+        response = self._profile_plugin.capture_route(environ, start_response)
 
         return response
 
@@ -204,7 +205,6 @@ class TFProfiler(base_plugin.BasePlugin):
     @staticmethod
     def setup() -> None:
         import tensorflow as tf
-
         tf.profiler.experimental.server.start(int(_ENV_VARS.tf_profiler_port))
 
     @staticmethod

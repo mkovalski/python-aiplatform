@@ -1,7 +1,7 @@
-Diagnostics tool
+Cloud training tools
 =======================================
 
-The cloud diagnostics tool for Vertex AI allows users to use the provided
+The cloud training tools for Vertex AI allows users to use the provided
 plugins to enable debugging and profiling options for training.
 
 Usage
@@ -11,12 +11,12 @@ From your python training script:
 
 .. code-block:: python
 
-    from google.cloud.aiplatform import training_utils
+    from google.cloud.aiplatform.training_utils import cloud_training_tools
     ...
-    training_utils.start_diagnostics()
+    cloud_training_tools.initialize()
 
 TF Profiler Plugin
-^^^^^^^^^^^^^^^^^^^6
+^^^^^^^^^^^^^^^^^^^
 
 To use the TF Profiler, Vertex AI Tensorboard must be enabled in your training
 job. For this, see

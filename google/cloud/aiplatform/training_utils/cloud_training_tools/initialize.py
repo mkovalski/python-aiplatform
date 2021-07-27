@@ -22,12 +22,12 @@ from typing import Optional, List
 from werkzeug import serving
 
 
-from google.cloud.aiplatform.training_utils.diagnostics import web_server
-from google.cloud.aiplatform.training_utils.diagnostics.plugins import tf_profiler
+from google.cloud.aiplatform.training_utils.cloud_training_tools import web_server
+from google.cloud.aiplatform.training_utils.cloud_training_tools.plugins.tf_profiler import tf_profiler
 
 
 class Plugins(Enum):
-    """List of plugins that are available for diagnostics SDK."""
+    """List of plugins that are available for cloud_training_tools SDK."""
 
     TF_PROFILER = 1
 
@@ -40,28 +40,28 @@ ALL_PLUGINS = list(MAP_TO_PLUGIN)
 
 
 def _run_webserver(plugins, port):
-    """Run the webserver that hosts the various diagnostics plugins."""
+    """Run the webserver that hosts the various cloud_training_tools plugins."""
     app = web_server.create_web_server(plugins)
-    serving.run_simple("127.0.0.1", port, app)
+    serving.run_simple('0.0.0.0', port, app)
 
 
 def _run_app_thread(plugins: List[Plugins], port: int) -> None:
-    """Run the diagnostics web server in a separate thread."""
+    """Run the cloud_training_tools web server in a separate thread."""
     daemon = threading.Thread(
-        name="diagnostics_server", target=_run_webserver, args=(plugins, port)
+        name="cloud_training_tools_server", target=_run_webserver, args=(plugins, port)
     )
     daemon.setDaemon(True)
     daemon.start()
 
 
-def start_diagnostics(plugins: Optional[List[Plugins]] = ALL_PLUGINS, port: int = 6010):
-    """Initialize the diagnostics SDK.
+def initialize(plugins: Optional[List[Plugins]] = ALL_PLUGINS, port: int = 6010):
+    """Initialize the cloud_training_tools SDK.
 
     The SDK will initialize the various diagnostic tools
     available for cloud training.
 
     Args:
-      plugins: A list of plugins used in the diagnostics tool. By default, this
+      plugins: A list of plugins used in the cloud_training_tools tool. By default, this
         defaults to all plugins added to the `MAP_TO_PLUGIN` variable.
       port: A port to serve web requests.
     """
