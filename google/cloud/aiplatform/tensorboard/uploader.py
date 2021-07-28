@@ -15,22 +15,16 @@
 # limitations under the License.
 #
 """Uploads a TensorBoard logdir to TensorBoard.gcp."""
-import contextlib
-import datetime
 import functools
-import json
 import os
 import time
 import re
 from typing import (
-    Callable,
     Dict,
     FrozenSet,
     Generator,
     Iterable,
     Optional,
-    List,
-    Set,
 )
 import uuid
 
@@ -73,6 +67,9 @@ from google.cloud.aiplatform.compat.types import (
 from google.cloud.aiplatform.compat.types import (
     tensorboard_time_series_v1beta1 as tensorboard_time_series,
 )
+from google.cloud.aiplatform.tensorboard import uploader_utils
+from google.cloud.aiplatform.tensorboard.uploader_utils import ExperimentNotFoundError
+from google.cloud.aiplatform.tensorboard.plugins import profile_uploader
 from google.protobuf import message
 from google.protobuf import timestamp_pb2 as timestamp
 
@@ -305,7 +302,7 @@ class TensorBoardUploader(object):
         experiment = self._create_or_get_experiment()
         self._experiment = experiment
 
-        self._run_resource_manager = _RunResourceManager(
+        self._run_resource_manager = uploader_utils.RunResourceManager(
             api=self._api, experiment_resource_name=self._experiment.name,
         )
 
@@ -345,8 +342,10 @@ class TensorBoardUploader(object):
         """
         additional_senders = {}
 
-        if "profile" in self._allowed_plugins:
-            additional_senders["profile"] = ProfileRequestSender(
+        # Only upload profiles in one shot mode for now, since files may not
+        # have been fully written before uploading.
+        if "profile" in self._allowed_plugins and self._one_shot:
+            additional_senders["profile"] = profile_uploader.ProfileRequestSender(
                 self._experiment.name,
                 self._api,
                 upload_limits=self._upload_limits,
@@ -402,74 +401,8 @@ class TensorBoardUploader(object):
             self._dispatcher.dispatch_requests(run_to_events)
 
 
-class _RunResourceManager(object):
-    """Manager object for the creation and storing of run resources."""
-
-    def __init__(self, api, experiment_resource_name):
-        """Create a run resource manager object.
-
-        Args:
-            api: a `TensorBoardWriterService` stub instance
-            experiment_resource_name: Name of the experiment resource of the form
-                projects/{project}/locations/{location}/tensorboards/{tensorboard}/experiments/{experiment}
-        """
-        self._api = api
-        self._experiment_resource_name = experiment_resource_name
-
-        self._run_to_run_resource: Dict[str, tensorboard_run.TensorboardRun] = {}
-
-    @property
-    def run_to_run_resource(self):
-        """Mapping from run resource name to a `TensorboardRun`."""
-        return self._run_to_run_resource
-
-    def create_or_get_run_resource(
-        self, run_name: str,
-    ):
-        """Creates a new Run Resource in current Tensorboard Experiment resource.
-
-        Args:
-          run_name: The display name of this run.
-        """
-        tb_run = tensorboard_run.TensorboardRun()
-        tb_run.display_name = run_name
-        try:
-            tb_run = self._api.create_tensorboard_run(
-                parent=self._experiment_resource_name,
-                tensorboard_run=tb_run,
-                tensorboard_run_id=str(uuid.uuid4()),
-            )
-        except exceptions.InvalidArgument as e:
-            # If the run name already exists then retrieve it
-            if "already exist" in e.message:
-                runs_pages = self._api.list_tensorboard_runs(
-                    parent=self._experiment_resource_name
-                )
-                for tb_run in runs_pages:
-                    if tb_run.display_name == run_name:
-                        break
-
-                if tb_run.display_name != run_name:
-                    raise ExistingResourceNotFoundError(
-                        "Run with name %s already exists but is not resource list."
-                        % run_name
-                    )
-            else:
-                raise
-
-        self._run_to_run_resource[run_name] = tb_run
-
-
-class ExperimentNotFoundError(RuntimeError):
-    pass
-
-
 class PermissionDeniedError(RuntimeError):
     pass
-
-
-class ExistingResourceNotFoundError(RuntimeError):
-    """Resource could not be created or retrieved."""
 
 
 class _OutOfSpaceError(Exception):
@@ -509,7 +442,7 @@ class _BatchedRequestSender(object):
         blob_storage_bucket: storage.Bucket,
         blob_storage_folder: str,
         tracker: upload_tracker.UploadTracker,
-        run_resource_manager: _RunResourceManager,
+        run_resource_manager: uploader_utils.RunResourceManager,
     ):
         """Constructs _BatchedRequestSender for the given experiment resource.
 
@@ -732,303 +665,6 @@ class _Dispatcher(object):
         self._request_sender.flush()
 
 
-class ProfileRunLoader(object):
-    """Loader for profiling runs within a training run."""
-
-    # A regular expression for the naming of a profiling path.
-    PROF_PATH_REGEX = r".*\/[0-9]{4}_[0-9]{2}_[0-9]{2}_[0-9]{2}_[0-9]{2}_[0-9]{2}$"
-
-    def __init__(
-        self, path: str,
-    ):
-        """Create a loader for profiling runs with a training run.
-
-        Args:
-            path: Path to the training run, which contains one or more profiling
-                runs. Path should end with '/profile/plugin'.
-        """
-        self._path = path
-
-        self._prof_runs_to_files: Dict[str, Set[str]] = {}
-
-    def _path_filter(
-        self, path: str,
-    ):
-        """Determine which paths we should upload.
-
-        Paths written by profiler should be of form:
-        %Y_%m_%d_%H_%M_%S
-
-        Args:
-            path: string representing a full directory path.
-
-        Returns:
-            True if matches the filter, False otherwise.
-        """
-        if tf.io.gfile.isdir(path) and re.match(self.PROF_PATH_REGEX, path):
-            return True
-        return False
-
-    def _path_to_file_generator(self, prof_run: str, path: str) -> List[str]:
-        """Generates files that have not yet been tracked.
-
-        Files are generated by the profiler and are added to an internal
-        dictionary. For files that have not yet been uploaded, we return these
-        files.
-
-        Args:
-            prof_run: string of the profiling run name.
-            path: directory of the profiling run.
-
-        Returns:
-            Files that have not been tracked yet.
-        """
-
-        files = []
-        for file in tf.io.gfile.listdir(path):
-            full_file_path = os.path.join(path, file)
-            if full_file_path not in self._prof_runs_to_files[prof_run]:
-                self._prof_runs_to_files[prof_run].add(full_file_path)
-                files.append(full_file_path)
-        return files
-
-    def prof_run_to_files(self):
-        """Map profile runs to new files that have been created by the profiler.
-
-        Returns:
-            A dictionary mapping the profiling path name to a list of files that
-                which have not yet been tracked.
-        """
-        prof_runs_to_files = {}
-
-        paths = tf.io.gfile.listdir(self._path)
-
-        for path in paths:
-            full_path = os.path.join(self._path, path)
-            if not self._path_filter(full_path):
-                continue
-
-            if path not in self._prof_runs_to_files:
-                self._prof_runs_to_files[path] = set()
-
-            prof_runs_to_files[path] = self._path_to_file_generator(path, full_path)
-
-        return prof_runs_to_files
-
-
-class ProfileRequestSender(_Sender):
-    """Helper class for building requests for the profiler plugin.
-
-    The profile plugin does not contain values within the events like
-    the other event files do. In addition, these event files do not update once
-    a new profile event occurs. The event is empty and only signals that a
-    profile sessions has occurred.
-
-    To verify the plugin, subdirectories need to be searched to confirm valid
-    profile directories and files.
-
-    This class is not threadsafe. Use external synchronization if
-    calling its methods concurrently.
-    """
-
-    # The directory in which profiles are stored.
-    PROFILE_DIR = "plugins/profile"
-
-    def __init__(
-        self,
-        experiment_resource_name: str,
-        api: TensorboardServiceClient,
-        upload_limits: server_info_pb2.UploadLimits,
-        blob_rpc_rate_limiter: util.RateLimiter,
-        blob_storage_bucket: storage.Bucket,
-        blob_storage_folder: str,
-        tracker: upload_tracker.UploadTracker,
-        logdir: str,
-        run_resource_manager: _RunResourceManager,
-    ):
-        """Constructs ProfileRequestSender for the given experiment resource.
-
-        Args:
-          experiment_resource_name: Name of the experiment resource of the form
-            projects/{project}/locations/{location}/tensorboards/{tensorboard}/experiments/{experiment}
-          api: Tensorboard service stub used to interact with experiment resource.
-          upload_limits: Upload limits for for api calls.
-          rpc_rate_limiter: a `RateLimiter` to use to limit write RPC frequency.
-            Note this limit applies at the level of single RPCs in the Scalar and
-            Tensor case, but at the level of an entire blob upload in the Blob
-            case-- which may require a few preparatory RPCs and a stream of chunks.
-            Note the chunk stream is internally rate-limited by backpressure from
-            the server, so it is not a concern that we do not explicitly rate-limit
-            within the stream here.
-          tracker: Upload tracker to track information about uploads.
-          logdir: The log directory for the request sender to search.
-          run_resource_manager: Manages creation or retrieving of runs.
-        """
-        self._experiment_resource_name = experiment_resource_name
-        self._api = api
-        self._logdir = logdir
-        self._tag_metadata = {}
-        self._handlers = {}
-        self._tracker = tracker
-        self._run_to_file_request_sender: Dict[str, _FileRequestSender] = {}
-        self._run_to_profile_loaders: Dict[str, ProfileRunLoader] = {}
-        self._run_resource_manager = run_resource_manager
-
-        self._file_request_sender_factory = functools.partial(
-            _FileRequestSender,
-            api=api,
-            rpc_rate_limiter=blob_rpc_rate_limiter,
-            max_blob_request_size=upload_limits.max_blob_request_size,
-            max_blob_size=upload_limits.max_blob_size,
-            blob_storage_bucket=blob_storage_bucket,
-            blob_storage_folder=blob_storage_folder,
-            tracker=self._tracker,
-        )
-
-    def _is_valid_event(
-        self, run_name: str,
-    ):
-        """Determines whether a profile session has occurred.
-
-        Profile events are determined by whether a corresponding directory has
-        been created for the profile plugin.
-
-        Args:
-            run_name: String representing the run name.
-
-        Returns:
-            True if is a valid profile plugin event, False otherwise.
-        """
-
-        if tf.io.gfile.isdir(self._profile_dir(run_name)):
-            return True
-        return False
-
-    def _profile_dir(self, run_name):
-        return os.path.join(self._logdir, run_name, self.PROFILE_DIR)
-
-    def send_request(self, run_name: str):
-        """Accepts run_name and sends an RPC request if an event is detected.
-
-        Args:
-          run_name: Name of the training run. It should be previously validated
-            that the run_name is a valid path which contains an event file.
-        """
-
-        # Check validity.
-        if not self._is_valid_event(run_name):
-            return
-
-        # Create a profiler loader if one is not created.
-        if run_name not in self._run_to_profile_loaders:
-            self._run_to_profile_loaders[run_name] = ProfileRunLoader(
-                self._profile_dir(run_name)
-            )
-
-        if run_name not in self._run_resource_manager.run_to_run_resource:
-            self._run_resource_manager.create_or_get_run_resource(run_name)
-
-        if run_name not in self._run_to_file_request_sender:
-            self._run_to_file_request_sender[
-                run_name
-            ] = self._file_request_sender_factory(
-                self._run_resource_manager.run_to_run_resource[run_name].name
-            )
-
-        prof_run_to_files = self._run_to_profile_loaders[run_name].prof_run_to_files()
-
-        for prof_run, files in prof_run_to_files.items():
-            if not files:
-                continue
-
-            try:
-                event_time = datetime.datetime.strptime(prof_run, "%Y_%m_%d_%H_%M_%S")
-            except ValueError as e:
-                logger.warning(
-                    "Could not get the datetime from profile run name: %s, "
-                    "using current datetime instead. %s",
-                    prof_run,
-                )
-                event_time = datetime.datetime.now()
-            event_timestamp = timestamp.Timestamp().FromDatetime(event_time)
-
-            self._run_to_file_request_sender[run_name].add_files(
-                files=files,
-                tag=prof_run,
-                plugin="profile",
-                event_timestamp=event_timestamp,
-            )
-
-
-class _TimeSeriesResourceManager(object):
-    """Helper class managing Time Series resources."""
-
-    def __init__(self, run_resource_id: str, api: TensorboardServiceClient):
-        """Constructor for _TimeSeriesResourceManager.
-
-        Args:
-          run_resource_id: The resource id for the run with the following format
-            projects/{project}/locations/{location}/tensorboards/{tensorboard}/experiments/{experiment}/runs/{run}
-          api: TensorboardServiceStub
-        """
-        self._run_resource_id = run_resource_id
-        self._api = api
-        self._tag_to_time_series_proto: Dict[
-            str, tensorboard_time_series.TensorboardTimeSeries
-        ] = {}
-
-    def get_or_create(
-        self,
-        tag_name: str,
-        time_series_resource_creator: Callable[
-            [], tensorboard_time_series.TensorboardTimeSeries
-        ],
-    ) -> tensorboard_time_series.TensorboardTimeSeries:
-        """get a time series resource with given tag_name, and create a new one on
-
-        OnePlatform if not present.
-
-        Args:
-          tag_name: The tag name of the time series in the Tensorboard log dir.
-          time_series_resource_creator: A callable that produces a TimeSeries for
-            creation.
-        """
-        if tag_name in self._tag_to_time_series_proto:
-            return self._tag_to_time_series_proto[tag_name]
-
-        time_series = time_series_resource_creator()
-        time_series.display_name = tag_name
-        try:
-            time_series = self._api.create_tensorboard_time_series(
-                parent=self._run_resource_id, tensorboard_time_series=time_series
-            )
-        except exceptions.InvalidArgument as e:
-            # If the time series display name already exists then retrieve it
-            if "already exist" in e.message:
-                list_of_time_series = self._api.list_tensorboard_time_series(
-                    request=tensorboard_service.ListTensorboardTimeSeriesRequest(
-                        parent=self._run_resource_id,
-                        filter="display_name = {}".format(json.dumps(str(tag_name))),
-                    )
-                )
-                num = 0
-                for ts in list_of_time_series:
-                    time_series = ts
-                    num += 1
-                    break
-                if num != 1:
-                    raise ValueError(
-                        "More than one time series resource found with display_name: {}".format(
-                            tag_name
-                        )
-                    )
-            else:
-                raise
-
-        self._tag_to_time_series_proto[tag_name] = time_series
-        return time_series
-
-
 class _ScalarBatchedRequestSender(object):
     """Helper class for building requests that fit under a size limit.
 
@@ -1068,7 +704,7 @@ class _ScalarBatchedRequestSender(object):
         # cleared whenever a new request is created
         self._tag_to_time_series_data: Dict[str, tensorboard_data.TimeSeriesData] = {}
 
-        self._time_series_resource_manager = _TimeSeriesResourceManager(
+        self._time_series_resource_manager = uploader_utils.TimeSeriesResourceManager(
             self._run_resource_id, self._api
         )
         self._new_request()
@@ -1134,7 +770,7 @@ class _ScalarBatchedRequestSender(object):
 
         self._rpc_rate_limiter.tick()
 
-        with _request_logger(request):
+        with uploader_utils.request_logger(request):
             with self._tracker.scalars_tracker(self._num_values):
                 try:
                     self._api.write_tensorboard_run_data(
@@ -1260,7 +896,7 @@ class _TensorBatchedRequestSender(object):
         # cleared whenever a new request is created
         self._tag_to_time_series_data: Dict[str, tensorboard_data.TimeSeriesData] = {}
 
-        self._time_series_resource_manager = _TimeSeriesResourceManager(
+        self._time_series_resource_manager = uploader_utils.TimeSeriesResourceManager(
             run_resource_id, api
         )
         self._new_request()
@@ -1325,7 +961,7 @@ class _TensorBatchedRequestSender(object):
 
         self._rpc_rate_limiter.tick()
 
-        with _request_logger(request):
+        with uploader_utils.request_logger(request):
             with self._tracker.tensors_tracker(
                 self._num_values,
                 self._num_values_skipped,
@@ -1562,7 +1198,7 @@ class _BlobRequestSender(object):
         self._max_blob_request_size = max_blob_request_size
         self._max_blob_size = max_blob_size
         self._tracker = tracker
-        self._time_series_resource_manager = _TimeSeriesResourceManager(
+        self._time_series_resource_manager = uploader_utils.TimeSeriesResourceManager(
             run_resource_id, api
         )
 
@@ -1671,7 +1307,7 @@ class _BlobRequestSender(object):
         if not request.time_series_data:
             return
 
-        with _request_logger(request):
+        with uploader_utils.request_logger(request):
             try:
                 self._api.write_tensorboard_run_data(
                     tensorboard_run=self._run_resource_id,
@@ -1706,192 +1342,6 @@ class _BlobRequestSender(object):
         )
         self._bucket.blob(blob_path).upload_from_string(blob)
         return blob_id
-
-
-class _FileRequestSender(object):
-    """Uploader for file based items.
-
-    This sender is closely related to the `_BlobRequestSender`, however it sends
-    files, given a path. The APIs are slightly different in the data that is
-    expected for file based requests.
-
-    This class is not threadsafe. Use external synchronization if calling its
-    methods concurrently.
-    """
-
-    def __init__(
-        self,
-        run_resource_id: str,
-        api: TensorboardServiceClient,
-        rpc_rate_limiter: util.RateLimiter,
-        max_blob_request_size: int,
-        max_blob_size: int,
-        blob_storage_bucket: storage.Bucket,
-        blob_storage_folder: str,
-        tracker: upload_tracker.UploadTracker,
-    ):
-        self._run_resource_id = run_resource_id
-        self._api = api
-        self._rpc_rate_limiter = rpc_rate_limiter
-        self._max_blob_request_size = max_blob_request_size
-        self._max_blob_size = max_blob_size
-        self._tracker = tracker
-        self._time_series_resource_manager = _TimeSeriesResourceManager(
-            run_resource_id, api
-        )
-
-        self._bucket = blob_storage_bucket
-        self._folder = blob_storage_folder
-
-        self._new_request()
-
-    def _new_request(self):
-        """Declares the previous event complete."""
-        self._files = []
-        self._tag = None
-        self._plugin = None
-        self._event_timestamp = None
-
-    def add_files(
-        self,
-        files: List[str],
-        tag: str,
-        plugin: str,
-        event_timestamp: timestamp.Timestamp,
-    ):
-        """Attempts to add the given file to the current request.
-
-        If a file does not exist, the file is ignored and the rest of the
-        files are checked to ensure the remaining files exist. After checking
-        the files, an rpc is immediately sent.
-
-        Args:
-            files: List of strings representing the path to the files to upload.
-            tag: An identifier for the blob sequence.
-            plugin: Name of the plugin making the request.
-            event_timestamp: A `timestamp.Timestamp` object for the time the
-                event is created.
-        """
-
-        for file in files:
-            if not os.path.isfile(file):
-                logger.warning(
-                    "The file provided does not exist. "
-                    "Will not be uploading file %s.",
-                    file,
-                )
-            else:
-                self._files.append(file)
-
-        self._tag = tag
-        self._plugin = plugin
-        self._event_timestamp = event_timestamp
-        self.flush()
-        self._new_request()
-
-    def flush(self):
-        """Sends the current file fully, and clears it to make way for the next."""
-        if not self._files:
-            return
-
-        time_series_proto = self._time_series_resource_manager.get_or_create(
-            self._tag,
-            lambda: tensorboard_time_series.TensorboardTimeSeries(
-                display_name=self._tag,
-                value_type=tensorboard_time_series.TensorboardTimeSeries.ValueType.BLOB_SEQUENCE,
-                plugin_name=self._plugin,
-            ),
-        )
-        m = re.match(
-            ".*/tensorboards/(.*)/experiments/(.*)/runs/(.*)/timeSeries/(.*)",
-            time_series_proto.name,
-        )
-        blob_path_prefix = "tensorboard-{}/{}/{}/{}".format(m[1], m[2], m[3], m[4])
-        blob_path_prefix = (
-            "{}/{}".format(self._folder, blob_path_prefix)
-            if self._folder
-            else blob_path_prefix
-        )
-        sent_blob_ids = []
-        for file in self._files:
-            self._rpc_rate_limiter.tick()
-            file_size = tf.io.gfile.stat(file).length
-            with self._tracker.blob_tracker(file_size) as blob_tracker:
-                blob_id = self._send_file(file, blob_path_prefix)
-                if blob_id is not None:
-                    sent_blob_ids.append(str(blob_id))
-                blob_tracker.mark_uploaded(blob_id is not None)
-
-        data_point = tensorboard_data.TimeSeriesDataPoint(
-            blobs=tensorboard_data.TensorboardBlobSequence(
-                values=[
-                    tensorboard_data.TensorboardBlob(id=blob_id)
-                    for blob_id in sent_blob_ids
-                ]
-            ),
-            wall_time=self._event_timestamp,
-        )
-
-        time_series_data_proto = tensorboard_data.TimeSeriesData(
-            tensorboard_time_series_id=time_series_proto.name.split("/")[-1],
-            value_type=tensorboard_time_series.TensorboardTimeSeries.ValueType.BLOB_SEQUENCE,
-            values=[data_point],
-        )
-        request = tensorboard_service.WriteTensorboardRunDataRequest(
-            time_series_data=[time_series_data_proto]
-        )
-
-        _prune_empty_time_series_from_blob(request)
-        if not request.time_series_data:
-            return
-
-        with _request_logger(request):
-            try:
-                self._api.write_tensorboard_run_data(
-                    tensorboard_run=self._run_resource_id,
-                    time_series_data=request.time_series_data,
-                )
-            except grpc.RpcError as e:
-                if e.code() == grpc.StatusCode.NOT_FOUND:
-                    raise ExperimentNotFoundError()
-                logger.error("Upload call failed with error %s", e)
-
-    def _send_file(self, file, blob_path_prefix):
-        """Sends a single file to a GCS bucket in the consumer project.
-
-        The file will not be sent if it is too large.
-
-        Returns:
-          The ID of blob successfully sent.
-        """
-
-        file_size = tf.io.gfile.stat(file).length
-        if file_size > self._max_blob_size:
-            logger.warning(
-                "Blob too large; skipping.  Size %d exceeds limit of %d bytes.",
-                file_size,
-                self._max_blob_size,
-            )
-            return None
-        blob_id = os.path.basename(file)
-        blob_path = (
-            "{}/{}".format(blob_path_prefix, blob_id) if blob_path_prefix else blob_id
-        )
-        self._bucket.blob(blob_path).upload_from_filename(file)
-        return blob_id
-
-
-@contextlib.contextmanager
-def _request_logger(request: tensorboard_service.WriteTensorboardRunDataRequest):
-    """Context manager to log request size and duration."""
-    upload_start_time = time.time()
-    request_bytes = request._pb.ByteSize()  # pylint: disable=protected-access
-    logger.info("Trying request of %d bytes", request_bytes)
-    yield
-    upload_duration_secs = time.time() - upload_start_time
-    logger.info(
-        "Upload of (%d bytes) took %.3f seconds", request_bytes, upload_duration_secs,
-    )
 
 
 def _varint_cost(n: int):

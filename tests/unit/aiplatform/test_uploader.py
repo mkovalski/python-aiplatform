@@ -42,7 +42,9 @@ from tensorboard.uploader.proto import server_info_pb2
 import tensorflow as tf
 
 from google.api_core import datetime_helpers
+from google.cloud.aiplatform.tensorboard import uploader_utils
 import google.cloud.aiplatform.tensorboard.uploader as uploader_lib
+from google.cloud.aiplatform.tensorboard.plugins import profile_uploader
 from google.cloud import storage
 from google.cloud.aiplatform.compat.services import tensorboard_service_client_v1beta1
 from google.cloud.aiplatform_v1beta1.services.tensorboard_service.transports import (
@@ -245,7 +247,7 @@ def _create_request_sender(
         max_tensor_point_size=52000,
     )
 
-    run_resource_manager = uploader_lib._RunResourceManager(
+    run_resource_manager = uploader_utils.RunResourceManager(
         api=api,
         experiment_resource_name=experiment_resource_name
     )
@@ -256,7 +258,7 @@ def _create_request_sender(
 
     additional_senders = {}
     if use_profile:
-        additional_senders['profile'] = uploader_lib.ProfileRequestSender(
+        additional_senders['profile'] = profile_uploader.ProfileRequestSender(
             experiment_resource_name=experiment_resource_name,
             api=api,
             upload_limits=upload_limits,
@@ -313,7 +315,7 @@ def _create_file_request_sender(
         blob_storage_bucket=_create_mock_blob_storage()
     if max_blob_size is _USE_DEFAULT:
         max_blob_size = 128000
-    return uploader_lib._FileRequestSender(
+    return profile_uploader._FileRequestSender(
         run_resource_id=run_resource_id,
         api=api,
         rpc_rate_limiter=util.RateLimiter(0),
@@ -978,6 +980,7 @@ class TensorboardUploaderTest(tf.test.TestCase):
     def test_add_profile_plugin(self):
         logdir = _TEST_LOG_DIR_NAME
         uploader = _create_uploader(_create_mock_client(), logdir,
+                                    one_shot=True,
                                     allowed_plugins=frozenset(
                                         ('profile',)))
         uploader.create_experiment()
@@ -1130,7 +1133,7 @@ class ProfileRequestSenderTest(tf.test.TestCase):
         prof_run_name = 'bad_run_name'
 
         with tempfile.TemporaryDirectory() as logdir:
-          prof_path = os.path.join(logdir, uploader_lib.ProfileRequestSender.PROFILE_DIR)
+          prof_path = os.path.join(logdir, profile_uploader.ProfileRequestSender.PROFILE_DIR)
           os.makedirs(prof_path)
 
           run_path = os.path.join(prof_path, prof_run_name)
@@ -1147,7 +1150,7 @@ class ProfileRequestSenderTest(tf.test.TestCase):
         prof_run_name = '2021_01_01_01_10_10'
 
         with tempfile.TemporaryDirectory() as logdir:
-          prof_path = os.path.join(logdir, uploader_lib.ProfileRequestSender.PROFILE_DIR)
+          prof_path = os.path.join(logdir, profile_uploader.ProfileRequestSender.PROFILE_DIR)
           os.makedirs(prof_path)
 
           run_path = os.path.join(prof_path, prof_run_name)
@@ -1169,7 +1172,7 @@ class ProfileRequestSenderTest(tf.test.TestCase):
         ]
 
         with tempfile.TemporaryDirectory() as logdir:
-            prof_path = os.path.join(logdir, uploader_lib.ProfileRequestSender.PROFILE_DIR)
+            prof_path = os.path.join(logdir, profile_uploader.ProfileRequestSender.PROFILE_DIR)
             os.makedirs(prof_path)
 
             run_paths = [os.path.join(prof_path, prof_run_names[0]),
@@ -1199,7 +1202,7 @@ class ProfileRequestSenderTest(tf.test.TestCase):
         mock_client = _create_mock_client()
 
         with tempfile.TemporaryDirectory() as logdir:
-            prof_path = os.path.join(logdir, uploader_lib.ProfileRequestSender.PROFILE_DIR)
+            prof_path = os.path.join(logdir, profile_uploader.ProfileRequestSender.PROFILE_DIR)
             os.makedirs(prof_path)
 
             run_path = os.path.join(prof_path, prof_run_name)
