@@ -264,6 +264,7 @@ def _create_request_sender(
             upload_limits=upload_limits,
             blob_rpc_rate_limiter=blob_rpc_rate_limiter,
             blob_storage_bucket=_create_mock_blob_storage(),
+            source_bucket=_create_mock_blob_storage(),
             blob_storage_folder=None,
             tracker=upload_tracker.UploadTracker(verbosity=0),
             logdir=logdir,
@@ -306,6 +307,7 @@ def _create_file_request_sender(
     run_resource_id, api=_USE_DEFAULT, max_blob_request_size=_USE_DEFAULT,
     max_blob_size=_USE_DEFAULT, blob_storage_folder=None,
     blob_storage_bucket=_USE_DEFAULT,
+    source_bucket=_USE_DEFAULT,
 ):
     if api is _USE_DEFAULT:
         api = _create_mock_client()
@@ -313,6 +315,8 @@ def _create_file_request_sender(
         max_blob_request_size = 128000
     if blob_storage_bucket is _USE_DEFAULT:
         blob_storage_bucket=_create_mock_blob_storage()
+    if source_bucket is _USE_DEFAULT:
+        source_bucket=_create_mock_blob_storage()
     if max_blob_size is _USE_DEFAULT:
         max_blob_size = 128000
     return profile_uploader._FileRequestSender(
@@ -323,6 +327,7 @@ def _create_file_request_sender(
         max_blob_size=max_blob_size,
         blob_storage_bucket=blob_storage_bucket,
         blob_storage_folder=blob_storage_folder,
+        source_bucket=source_bucket,
         tracker=upload_tracker.UploadTracker(verbosity=0),
     )
 

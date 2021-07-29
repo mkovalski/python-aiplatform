@@ -345,6 +345,7 @@ class TensorBoardUploader(object):
         # Only upload profiles in one shot mode for now, since files may not
         # have been fully written before uploading.
         if "profile" in self._allowed_plugins and self._one_shot:
+            source_bucket = profile_uploader.get_source_bucket(self._logdir)
             additional_senders["profile"] = profile_uploader.ProfileRequestSender(
                 self._experiment.name,
                 self._api,
@@ -352,6 +353,7 @@ class TensorBoardUploader(object):
                 blob_rpc_rate_limiter=self._blob_rpc_rate_limiter,
                 blob_storage_bucket=self._blob_storage_bucket,
                 blob_storage_folder=self._blob_storage_folder,
+                source_bucket=source_bucket,
                 tracker=self._tracker,
                 logdir=self._logdir,
                 run_resource_manager=self._run_resource_manager,
