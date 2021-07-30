@@ -18,6 +18,7 @@
 """Helper functions for tensorboard uploader."""
 import contextlib
 import json
+import re
 import time
 from typing import Callable, Dict
 import uuid
@@ -25,6 +26,7 @@ import uuid
 from tensorboard.util import tb_logging
 
 from google.api_core import exceptions
+from google.cloud import storage
 from google.cloud.aiplatform.compat.services import tensorboard_service_client_v1beta1
 from google.cloud.aiplatform.compat.types import (
     tensorboard_run_v1beta1 as tensorboard_run,
@@ -40,6 +42,12 @@ TensorboardServiceClient = tensorboard_service_client_v1beta1.TensorboardService
 
 logger = tb_logging.get_logger()
 
+def get_source_bucket(logdir: str) -> storage.Bucket:
+    m = re.match(r"gs:\/\/(.*?)(?=\/|$)", logdir)
+    if not m:
+        return None
+    bucket = storage.Client().bucket(m[1])
+    return bucket
 
 class ExistingResourceNotFoundError(RuntimeError):
     """Resource could not be created or retrieved."""

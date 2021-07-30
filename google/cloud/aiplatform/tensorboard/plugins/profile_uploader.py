@@ -285,9 +285,6 @@ class _ProfileRunLoader(object):
             if not self._path_filter(full_path):
                 continue
 
-            if path.endswith('/'):
-                path = path[:-1]
-
             if path not in self._prof_runs_to_files:
                 self._prof_runs_to_files[path] = set()
 
@@ -408,10 +405,10 @@ class _FileRequestSender(object):
             self._rpc_rate_limiter.tick()
             file_size = tf.io.gfile.stat(file).length
             with self._tracker.blob_tracker(file_size) as blob_tracker:
-                blob_id = self._copy_between_buckets(file, blob_path_prefix)
-                if blob_id is not None:
+                if not self._file_too_large(file):
+                    blob_id = self._copy_between_buckets(file, blob_path_prefix)
                     sent_blob_ids.append(str(blob_id))
-                blob_tracker.mark_uploaded(blob_id is not None)
+                    blob_tracker.mark_uploaded(blob_id is not None)
 
         data_point = tensorboard_data.TimeSeriesDataPoint(
             blobs=tensorboard_data.TensorboardBlobSequence(
@@ -432,6 +429,7 @@ class _FileRequestSender(object):
             time_series_data=[time_series_data_proto]
         )
 
+
         _prune_empty_time_series_from_blob(request)
         if not request.time_series_data:
             return
@@ -447,8 +445,7 @@ class _FileRequestSender(object):
                     raise ExperimentNotFoundError()
                 logger.error("Upload call failed with error %s", e)
 
-    def _copy_between_buckets(self, file, blob_path_prefix):
-        """Move files between the user's bucket and the tenant bucket."""
+    def _file_too_large(self, file):
         file_size = tf.io.gfile.stat(file).length
         if file_size > self._max_blob_size:
             logger.warning(
@@ -456,8 +453,11 @@ class _FileRequestSender(object):
                 file_size,
                 self._max_blob_size,
             )
-            return None
+            return True
+        return False
 
+    def _copy_between_buckets(self, file, blob_path_prefix):
+        """Move files between the user's bucket and the tenant bucket."""
         blob_id = os.path.basename(file)
         blob_name = _get_blob_from_file(file)
 
@@ -468,14 +468,19 @@ class _FileRequestSender(object):
         )
 
         self._source_bucket.copy_blob(
-            source_blob, self._bucket, blob_path)
+            source_blob, self._bucket, blob_path,
+        )
 
         return blob_id
+
 
 def _get_blob_from_file(fp):
     m = re.match(r'gs:\/\/.*?\/(.*)', fp)
     if not m:
-        return None, None
+        logger.warning(
+            'Could not get the blob name from file %s', fp
+        )
+        return None
     return m[1]
 
 
@@ -488,11 +493,3 @@ def _prune_empty_time_series_from_blob(
     ):
         if not any(x.blobs for x in time_series_data.values):
             del request.time_series_data[time_series_idx]
-
-
-def get_source_bucket(logdir):
-    m = re.match(r"gs:\/\/(.*?)(?=\/|$)", logdir)
-    if not m:
-        return None
-    bucket = storage.Client().bucket(m[1])
-    return bucket

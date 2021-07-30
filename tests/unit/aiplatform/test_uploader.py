@@ -288,6 +288,7 @@ def _create_request_sender(
         additional_senders = additional_senders,
     )
 
+
 def _create_scalar_request_sender(
     run_resource_id, api=_USE_DEFAULT, max_request_size=_USE_DEFAULT
 ):
@@ -1117,6 +1118,7 @@ class ProfileRequestSenderTest(tf.test.TestCase):
             logdir=logdir,
             use_profile=True,
         )
+
         builder.dispatch_requests({"": _apply_compat(events)})
         profile_requests = mock_client.write_tensorboard_run_data.call_args_list
 
@@ -1241,7 +1243,6 @@ class ProfileRequestSenderTest(tf.test.TestCase):
                 call_args_list[0][1]['time_series_data'][0].tensorboard_time_series_id,
                 prof_run_name_2
             )
-
 
 class ScalarBatchedRequestSenderTest(tf.test.TestCase):
     def _add_events(self, sender, events):
@@ -1736,6 +1737,16 @@ class FileRequestSenderTest(tf.test.TestCase):
             files,
             [x.id for x in call_args_list['time_series_data'][0].values[0].blobs.values]
         )
+
+    def test_copy_blobs(self):
+        mock_client = _create_mock_client()
+        sender = _create_file_request_sender(
+            api=mock_client,
+            run_resource_id=_TEST_ONE_PLATFORM_RUN_NAME,
+        )
+
+        sender._copy_between_buckets('gs://path/to/my/file', None)
+        self.assertLen(sender._source_bucket.copy_blob.call_args_list, 1)
 
 class VarintCostTest(tf.test.TestCase):
     def test_varint_cost(self):
