@@ -53,6 +53,9 @@ _TEST_CLUSTER_SPEC = """{
         "trial":"TRIAL_ID"
     }
 }"""
+_TEST_TF_PROFILER_PORT = "1234"
+_TEST_TENSORBOARD_API_URI = "http://testuri.com"
+_TEST_TENSORBOARD_RESOURCE_NAME = "projects/myproj/locations/us-central1/tensorboards/1234"
 
 
 class TestTrainingUtils:
@@ -67,6 +70,9 @@ class TestTrainingUtils:
             "AIP_TENSORBOARD_LOG_DIR": _TEST_TENSORBOARD_LOG_DIR,
             "CLUSTER_SPEC": _TEST_CLUSTER_SPEC,
             "TF_CONFIG": _TEST_CLUSTER_SPEC,
+            "AIP_TF_PROFILER_PORT": _TEST_TF_PROFILER_PORT,
+            "AIP_TENSORBOARD_API_URI": _TEST_TENSORBOARD_API_URI,
+            "AIP_TENSORBOARD_RESOURCE_NAME": _TEST_TENSORBOARD_RESOURCE_NAME,
         }
         with mock.patch.dict(os.environ, env_vars):
             yield
@@ -142,3 +148,31 @@ class TestTrainingUtils:
     def test_tf_config_none(self):
         env_vars = training_utils.EnvironmentVariables()
         assert env_vars.tf_config is None
+
+    @pytest.mark.usefixtures("mock_environment")
+    def test_profiler_port(self):
+        env_vars = training_utils.EnvironmentVariables()
+        assert env_vars.tf_profiler_port == _TEST_TF_PROFILER_PORT
+
+    def test_profiler_port_none(self):
+        env_vars = training_utils.EnvironmentVariables()
+        assert env_vars.tf_profiler_port is None
+
+    @pytest.mark.usefixtures("mock_environment")
+    def test_tensorboard_api_uri(self):
+        env_vars = training_utils.EnvironmentVariables()
+        assert env_vars.tensorboard_api_uri == _TEST_TENSORBOARD_API_URI
+
+    def test_tensorboard_api_uri_none(self):
+        env_vars = training_utils.EnvironmentVariables()
+        assert env_vars.tensorboard_api_uri is None
+
+    @pytest.mark.usefixtures("mock_environment")
+    def test_tensorboard_resource_name(self):
+        env_vars = training_utils.EnvironmentVariables()
+        assert env_vars.tensorboard_resource_name == _TEST_TENSORBOARD_RESOURCE_NAME
+
+    def test_tensorboard_resource_name_none(self):
+        env_vars = training_utils.EnvironmentVariables()
+        assert env_vars.tensorboard_resource_name is None
+

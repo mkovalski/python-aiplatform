@@ -29,11 +29,12 @@ from werkzeug import wrappers
 from werkzeug.test import EnvironBuilder
 
 from google.cloud.aiplatform import training_utils
-from google.cloud.aiplatform.training_utils.diagnostics.plugins.tf_profiler import (
+from google.cloud.aiplatform.training_utils.cloud_training_tools.plugins.tf_profiler.tf_profiler import (
     TFProfiler,
 )
-from google.cloud.aiplatform.training_utils.diagnostics import web_server
-from google.cloud.aiplatform.training_utils.diagnostics import initialize
+from google.cloud.aiplatform.training_utils.cloud_training_tools.plugins.tf_profiler import tensorboard_api
+from google.cloud.aiplatform.training_utils.cloud_training_tools import web_server
+from google.cloud.aiplatform.training_utils.cloud_training_tools import cloud_initializer
 
 
 _ENV_VARS = training_utils.EnvironmentVariables()
@@ -59,13 +60,27 @@ def profile_plugin_mock():
 
 
 @pytest.fixture
+def tensorboard_api_mock():
+    with mock.patch.object(
+        tensorboard_api,
+        #google.cloud.aiplatform.cloud_training_tools.plugins.tf_profiler.tensoboard_api,
+        "make_profile_request_sender",
+    ) as sender_mock:
+        sender_mock.return_value = mock.Mock()
+        yield sender_mock
+
+
+@pytest.fixture
 def setupEnvVars():
     os.environ["AIP_TF_PROFILER_PORT"] = "6009"
     os.environ["AIP_TENSORBOARD_LOG_DIR"] = "tmp/"
+    os.environ["AIP_TENSORBOARD_API_URI"] = "test_api_uri"
+    os.environ["AIP_TENSORBOARD_RESOURCE_NAME"] = "projects/123/region/us-central1/tensorboards/mytb"
     os.environ["CLUSTER_SPEC"] = _CLUSTER_SPEC
 
 
 class TestProfilerPlugin:
+    # Initializion tests
     @pytest.mark.usefixtures("setupEnvVars")
     def testCanInitializeProfilerPortUnset(self):
         os.environ.pop("AIP_TF_PROFILER_PORT")
@@ -74,6 +89,16 @@ class TestProfilerPlugin:
     @pytest.mark.usefixtures("setupEnvVars")
     def testCanInitializeTBLogDirUnset(self):
         os.environ.pop("AIP_TENSORBOARD_LOG_DIR")
+        assert not TFProfiler.can_initialize()
+
+    @pytest.mark.usefixtures("setupEnvVars")
+    def testCanInitializeTBAPIuriUnset(self):
+        os.environ.pop("AIP_TENSORBOARD_API_URI")
+        assert not TFProfiler.can_initialize()
+
+    @pytest.mark.usefixtures("setupEnvVars")
+    def testCanInitializeTBResourceNameUnset(self):
+        os.environ.pop("AIP_TENSORBOARD_RESOURCE_NAME")
         assert not TFProfiler.can_initialize()
 
     @pytest.mark.usefixtures("setupEnvVars")
@@ -140,7 +165,9 @@ class TestProfilerPlugin:
 
             assert server_mock.call_count == 1
 
+    # Tests for plugin
     @pytest.mark.usefixtures("profile_plugin_mock")
+    @pytest.mark.usefixtures("tensorboard_api_mock")
     @pytest.mark.usefixtures("setupEnvVars")
     def testCaptureProfile(self):
         profiler = TFProfiler()
@@ -151,6 +178,7 @@ class TestProfilerPlugin:
         assert resp[0].status_code == 200
 
     @pytest.mark.usefixtures("profile_plugin_mock")
+    @pytest.mark.usefixtures("tensorboard_api_mock")
     @pytest.mark.usefixtures("setupEnvVars")
     def testCaptureProfileNoClusterSpec(self):
         profiler = TFProfiler()
@@ -164,6 +192,7 @@ class TestProfilerPlugin:
         assert resp.status_code == 500
 
     @pytest.mark.usefixtures("profile_plugin_mock")
+    @pytest.mark.usefixtures("tensorboard_api_mock")
     @pytest.mark.usefixtures("setupEnvVars")
     def testCaptureProfileNoCluster(self):
 
@@ -178,6 +207,7 @@ class TestProfilerPlugin:
         assert resp.status_code == 500
 
     @pytest.mark.usefixtures("profile_plugin_mock")
+    @pytest.mark.usefixtures("tensorboard_api_mock")
     @pytest.mark.usefixtures("setupEnvVars")
     def testCaptureProfileNoMaster(self):
         profiler = TFProfiler()
@@ -193,6 +223,7 @@ class TestProfilerPlugin:
         assert resp.status_code == 500
 
     @pytest.mark.usefixtures("profile_plugin_mock")
+    @pytest.mark.usefixtures("tensorboard_api_mock")
     @pytest.mark.usefixtures("setupEnvVars")
     def testGetRoutes(self):
         profiler = TFProfiler()
@@ -262,15 +293,15 @@ class TestWebServer(unittest.TestCase):
         assert final_response == res_dict
 
 
-def test_start_diagnostics_no_plugins():
+def test_start_cloud_training_tools_no_plugins():
     with mock.patch.object(
-        initialize, "_run_app_thread", return_value=None
+        cloud_initializer, "_run_app_thread", return_value=None
     ) as mock_app_thread:
-        initialize.start_diagnostics(plugins=[])
+        cloud_initializer.initialize(plugins=[])
         assert mock_app_thread.call_count == 0
 
 
-def test_start_diagnostics_bad_plugin():
+def test_start_cloud_training_tools_bad_plugin():
     mock_plugin = mock.Mock()
     mock_plugin.can_initialize.return_value = True
     mock_plugin.setup.return_value = None
@@ -278,14 +309,14 @@ def test_start_diagnostics_bad_plugin():
     mock_map = {"plugin1": mock_plugin}
 
     with mock.patch.object(
-        initialize, "_run_app_thread", return_value=None
+        cloud_initializer, "_run_app_thread", return_value=None
     ) as mock_app_thread:
-        with mock.patch.dict(initialize.MAP_TO_PLUGIN, mock_map):
-            initialize.start_diagnostics(plugins=["plugin1", "plugin2"])
+        with mock.patch.dict(cloud_initializer.ALL_PLUGINS, mock_map):
+            cloud_initializer.initialize(plugins=["plugin1", "plugin2"])
         mock_app_thread.assert_called_with([mock_plugin], 6010)
 
 
-def test_start_diagnostics_duplicate_plugins():
+def test_start_cloud_training_tools_duplicate_plugins():
 
     mock_plugin = mock.Mock()
     mock_plugin.can_initialize.return_value = True
@@ -294,14 +325,14 @@ def test_start_diagnostics_duplicate_plugins():
     mock_map = {"plugin1": mock_plugin}
 
     with mock.patch.object(
-        initialize, "_run_app_thread", return_value=None
+        cloud_initializer, "_run_app_thread", return_value=None
     ) as mock_app_thread:
-        with mock.patch.dict(initialize.MAP_TO_PLUGIN, mock_map):
-            initialize.start_diagnostics(plugins=["plugin1", "plugin1"])
+        with mock.patch.dict(cloud_initializer.ALL_PLUGINS, mock_map):
+            cloud_initializer.initialize(plugins=["plugin1", "plugin1"])
         mock_app_thread.assert_called_with([mock_plugin], 6010)
 
 
-def test_start_diagnostics_fail_initiliaze_plugins():
+def test_start_cloud_training_tools_fail_initiliaze_plugins():
 
     mock_plugin = mock.Mock()
     mock_plugin.can_initialize.return_value = True
@@ -314,22 +345,22 @@ def test_start_diagnostics_fail_initiliaze_plugins():
     mock_map = {"plugin1": mock_plugin, "plugin2": mock_plugin_fail}
 
     with mock.patch.object(
-        initialize, "_run_app_thread", return_value=None
+        cloud_initializer, "_run_app_thread", return_value=None
     ) as mock_app_thread:
-        with mock.patch.dict(initialize.MAP_TO_PLUGIN, mock_map):
-            initialize.start_diagnostics(plugins=["plugin1", "plugin2"])
+        with mock.patch.dict(cloud_initializer.ALL_PLUGINS, mock_map):
+            cloud_initializer.initialize(plugins=["plugin1", "plugin2"])
         mock_app_thread.assert_called_with([mock_plugin], 6010)
 
 
 def test_run_app_thread():
     mock_item = mock.Mock()
     with mock.patch.object(threading, "Thread", return_value=mock_item):
-        initialize._run_app_thread([], 6009)
+        cloud_initializer._run_app_thread([], 6009)
         assert mock_item.start.call_count == 1
 
 
 def test_run_webserver():
     mock_object = mock.Mock()
     with mock.patch.object(werkzeug.serving, "run_simple", mock_object):
-        initialize._run_webserver([], 6009)
+        cloud_initializer._run_webserver([], 6009)
         assert mock_object.call_count == 1

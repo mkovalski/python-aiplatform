@@ -67,7 +67,15 @@ def initialize(
 
     plugin_names = set()
 
-    for plugin in plugins:
+    for plugin_name in plugins:
+        plugin = ALL_PLUGINS.get(plugin_name)
+        if not plugin:
+            logging.warning(
+                'Plugin %s does not exist. To add it, add it to the `ALL_PLUGINS` variable',
+                plugin_name
+            )
+            continue
+
         if plugin.PLUGIN_NAME in plugin_names:
             logging.warning(
                 "Plugin %s already exists, will not load", plugin.PLUGIN_NAME

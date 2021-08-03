@@ -29,7 +29,12 @@ import importlib.util
 from werkzeug import wrappers
 
 from google.cloud.aiplatform.training_utils import EnvironmentVariables
-from google.cloud.aiplatform.training_utils.cloud_training_tools.plugins import base_plugin
+from google.cloud.aiplatform.training_utils.cloud_training_tools.plugins import (
+    base_plugin,
+)
+from google.cloud.aiplatform.training_utils.cloud_training_tools.plugins.tf_profiler import (
+    tensorboard_api,
+)
 
 
 # Simple namedtuple for tf verison information.
@@ -43,7 +48,7 @@ logger = logging.Logger("tf-profiler")
 
 def _tf_installed() -> bool:
     """Helper function to determine if tensorflow is installed."""
-    if not importlib.util.find_spec('tensorflow'):
+    if not importlib.util.find_spec("tensorflow"):
         logger.warning("Could not import tensorflow, will not run tf profiling service")
         return False
     return True
@@ -81,7 +86,12 @@ def _is_compatible_version(version: Version) -> bool:
     """
     if version.major >= 2 and version.minor >= 2:
         return True
-    logger.warning("Tensorflow version is not compatible with TF profiler")
+
+    version_string = '%s.%s.%s' % (version.major, version.minor, version.patch)
+    logger.warning(
+        "Tensorflow version %s is not compatible with TF profiler",
+        version_string
+    )
     return False
 
 
@@ -91,23 +101,19 @@ def _create_profiling_context() -> TBContext:
     context_flags = argparse.Namespace(master_tpu_unsecure_channel=None)
 
     context = TBContext(
-        logdir=_ENV_VARS.tensorboard_log_dir, multiplexer=None, flags=context_flags
+        logdir=_ENV_VARS.tensorboard_log_dir,
+        multiplexer=None,
+        flags=context_flags,
     )
 
     return context
-
-
-def _check_cluster_spec() -> Optional[str]:
-    cluster_spec = json.loads(os.environ.get("CLUSTER_SPEC", "{}"))
-    if not cluster_spec:
-        return 'Environment variable "CLUSTER_SPEC" is not set'
 
 
 def _host_to_grpc(hostname: str) -> str:
     """Format a hostname to a grpc address.
 
     Args:
-        hostname: address as a string
+        hostname: address as a string, in form: {hostname}:{port}
 
     Returns:
         address in form of: 'grpc://{hostname}:{port}'
@@ -117,11 +123,12 @@ def _host_to_grpc(hostname: str) -> str:
     )
 
 
-def _get_master_host() -> Optional[str]:
+def _get_chief_host() -> Optional[str]:
     """Get the master service address from an environment variable.
 
     Currently, only profile the master host. Note that the cluster config can have
-    either use 'chief' or 'master' as the config name. We try both and 
+    either use 'chief' or 'master' as the config name. We first try chief, fall back
+    to master, and return None if not available.
 
     Returns:
         A master host formatted by `_host_to_grpc`.
@@ -134,11 +141,13 @@ def _get_master_host() -> Optional[str]:
     if not cluster:
         return
 
-    host_list = cluster.get("master", []) or cluster.get("chief", [])
-    if not host_list:
+    chief_host = cluster.get("chief", []) or cluster.get("master", [])
+    if not chief_host:
         return
 
-    return _host_to_grpc(host_list[0])
+    chief = chief_host[0]
+
+    return _host_to_grpc(chief)
 
 
 def _get_cluster_spec() -> Optional[Dict[str, str]]:
@@ -149,10 +158,10 @@ def _get_cluster_spec() -> Optional[Dict[str, str]]:
 
 def _update_environ(environ) -> str:
     """Add parameters to the query that are retrieved from training side."""
-    host = _get_master_host()
+    host = _get_chief_host()
 
     if not host:
-        return "Could not get the master host"
+        return "Could not get the chief host address."
 
     query_dict = {}
     query_dict["service_addr"] = host
@@ -167,17 +176,59 @@ def _update_environ(environ) -> str:
 
     return ""
 
+def _check_env_vars() -> bool:
+    """Determine whether the correct environment variables are set.
+
+    Returns:
+        bool indicating all necessary variables are set.
+    """
+    if _ENV_VARS.tf_profiler_port is None:
+        logger.warning(
+            '"%s" environment variable not set, cannot enable profiling.',
+            "AIP_TF_PROFILER_PORT",
+        )
+        return False
+
+    if _ENV_VARS.tensorboard_log_dir is None:
+        logger.warning(
+            "Must set a tensorboard log directory, "
+            "run training with tensorboard enabled."
+        )
+        return False
+
+    if not _ENV_VARS.tensorboard_api_uri:
+        logger.warning(
+            "Must set the tensorboard API uri."
+        )
+        return False
+
+    if not _ENV_VARS.tensorboard_resource_name:
+        logger.warning(
+            "Must set the tensorboard resource name."
+        )
+        return False
+
+    cluster_spec = json.loads(os.environ.get("CLUSTER_SPEC", "{}"))
+    if not cluster_spec:
+        logger.warning(
+            'Environment variable "CLUSTER_SPEC" is not set'
+        )
+        return False
+
+    return True
+
 
 class TFProfiler(base_plugin.BasePlugin):
     """Handler for Tensorflow Profiling."""
 
-    PLUGIN_NAME = 'profile'
+    PLUGIN_NAME = "profile"
 
     def __init__(self):
         """Build a TFProfiler object."""
         from tensorboard_plugin_profile.profile_plugin import ProfilePlugin
 
         context = _create_profiling_context()
+        self._profile_request_sender = tensorboard_api.make_profile_request_sender()
         self._profile_plugin = ProfilePlugin(context)
 
     def get_routes(self):
@@ -197,6 +248,8 @@ class TFProfiler(base_plugin.BasePlugin):
             )
 
         response = self._profile_plugin.capture_route(environ, start_response)
+
+        self._profile_request_sender.send_request("")
 
         return response
 
@@ -226,19 +279,8 @@ class TFProfiler(base_plugin.BasePlugin):
 
         # Environment variable checks
         # Check that AI Platform service set a port for TF profiling
-        if _ENV_VARS.tf_profiler_port is None:
-            logger.warning(
-                '"%s" environment variable not set, cannot enable profiling.',
-                "AIP_TF_PROFILER_PORT",
-            )
-            return False
 
-        # Check that a log directory was specified
-        if _ENV_VARS.tensorboard_log_dir is None:
-            logger.warning(
-                "Must set a tensorboard log directory, "
-                "run training with tensorboard enabled."
-            )
+        if not _check_env_vars():
             return False
 
         # Check tf is installed
@@ -258,15 +300,8 @@ class TFProfiler(base_plugin.BasePlugin):
             )
             return False
 
-        # Check to make sure CLUSTER_SPEC is set
-        # Details on CLUSTER_SPEC: https://cloud.google.com/ai-platform/training/docs/distributed-training-containers#about-cluster-spec
-        cluster_spec_error = _check_cluster_spec()
-        if cluster_spec_error:
-            logger.warning(cluster_spec_error)
-            return False
-
         # Check for the tf profiler plugin
-        if not importlib.util.find_spec('tensorboard_plugin_profile'):
+        if not importlib.util.find_spec("tensorboard_plugin_profile"):
             logger.warning(
                 "Could not import tensorboard_plugin_profile, will not run tf profiling service"
             )
