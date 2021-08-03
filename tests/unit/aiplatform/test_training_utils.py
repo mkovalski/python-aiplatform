@@ -55,7 +55,10 @@ _TEST_CLUSTER_SPEC = """{
 }"""
 _TEST_TF_PROFILER_PORT = "1234"
 _TEST_TENSORBOARD_API_URI = "http://testuri.com"
-_TEST_TENSORBOARD_RESOURCE_NAME = "projects/myproj/locations/us-central1/tensorboards/1234"
+_TEST_TENSORBOARD_RESOURCE_NAME = (
+    "projects/myproj/locations/us-central1/tensorboards/1234"
+)
+_TEST_CLOUD_ML_JOB_ID = "myjob"
 
 
 class TestTrainingUtils:
@@ -68,11 +71,12 @@ class TestTrainingUtils:
             "AIP_MODEL_DIR": _TEST_MODEL_DIR,
             "AIP_CHECKPOINT_DIR": _TEST_CHECKPOINT_DIR,
             "AIP_TENSORBOARD_LOG_DIR": _TEST_TENSORBOARD_LOG_DIR,
-            "CLUSTER_SPEC": _TEST_CLUSTER_SPEC,
-            "TF_CONFIG": _TEST_CLUSTER_SPEC,
             "AIP_TF_PROFILER_PORT": _TEST_TF_PROFILER_PORT,
             "AIP_TENSORBOARD_API_URI": _TEST_TENSORBOARD_API_URI,
             "AIP_TENSORBOARD_RESOURCE_NAME": _TEST_TENSORBOARD_RESOURCE_NAME,
+            "CLOUD_ML_JOB_ID": _TEST_CLOUD_ML_JOB_ID,
+            "CLUSTER_SPEC": _TEST_CLUSTER_SPEC,
+            "TF_CONFIG": _TEST_CLUSTER_SPEC,
         }
         with mock.patch.dict(os.environ, env_vars):
             yield
@@ -176,3 +180,11 @@ class TestTrainingUtils:
         env_vars = training_utils.EnvironmentVariables()
         assert env_vars.tensorboard_resource_name is None
 
+    @pytest.mark.usefixtures("mock_environment")
+    def test_cloud_ml_job_id(self):
+        env_vars = training_utils.EnvironmentVariables()
+        assert env_vars.cloud_ml_job_id == _TEST_CLOUD_ML_JOB_ID
+
+    def test_cloud_ml_job_id_none(self):
+        env_vars = training_utils.EnvironmentVariables()
+        assert env_vars.cloud_ml_job_id is None

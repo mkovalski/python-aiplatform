@@ -77,6 +77,7 @@ def setupEnvVars():
     os.environ["AIP_TENSORBOARD_API_URI"] = "test_api_uri"
     os.environ["AIP_TENSORBOARD_RESOURCE_NAME"] = "projects/123/region/us-central1/tensorboards/mytb"
     os.environ["CLUSTER_SPEC"] = _CLUSTER_SPEC
+    os.environ["CLOUD_ML_JOB_ID"] = "myjob"
 
 
 class TestProfilerPlugin:
@@ -99,6 +100,11 @@ class TestProfilerPlugin:
     @pytest.mark.usefixtures("setupEnvVars")
     def testCanInitializeTBResourceNameUnset(self):
         os.environ.pop("AIP_TENSORBOARD_RESOURCE_NAME")
+        assert not TFProfiler.can_initialize()
+
+    @pytest.mark.usefixtures("setupEnvVars")
+    def testCanInitializeJobIdUnset(self):
+        os.environ.pop("CLOUD_ML_JOB_ID")
         assert not TFProfiler.can_initialize()
 
     @pytest.mark.usefixtures("setupEnvVars")

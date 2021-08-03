@@ -207,6 +207,10 @@ def _check_env_vars() -> bool:
         logger.warning('Environment variable "CLUSTER_SPEC" is not set')
         return False
 
+    if not _ENV_VARS.cloud_ml_job_id:
+        logger.warning("Job ID must be set")
+        return False
+
     return True
 
 

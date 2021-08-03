@@ -132,3 +132,13 @@ class EnvironmentVariables:
         """
 
         return os.environ.get("AIP_TENSORBOARD_RESOURCE_NAME")
+
+    @property
+    def cloud_ml_job_id(self) -> Optional[str]:
+        """
+        Returns:
+            The name given to the training job.
+            None if environment variable is not set.
+        """
+
+        return os.environ.get("CLOUD_ML_JOB_ID")

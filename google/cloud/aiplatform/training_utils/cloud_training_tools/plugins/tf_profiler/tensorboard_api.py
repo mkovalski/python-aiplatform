@@ -42,9 +42,7 @@ _ENV_VARS = EnvironmentVariables()
 
 API_URI = _ENV_VARS.tensorboard_api_uri
 TENSORBOARD_RESOURCE_NAME = _ENV_VARS.tensorboard_resource_name
-
-# TODO: Is this set in all vertex ai jobs?
-EXPERIMENT_NAME = os.environ.get("CLOUD_ML_JOB_ID")
+EXPERIMENT_NAME = _ENV_VARS.cloud_ml_job_id
 
 
 def _get_api_client():
