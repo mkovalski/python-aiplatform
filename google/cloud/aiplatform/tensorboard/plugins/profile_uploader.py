@@ -280,17 +280,17 @@ class _ProfileRunLoader(object):
         paths = tf.io.gfile.listdir(self._path)
 
         for path in paths:
+            # Remove trailing slashes in path names
+            path = path if not path.endswith('/') else path[:-1]
+
             full_path = os.path.join(self._path, path)
             if not self._path_filter(full_path):
                 continue
 
-            # Remove any suffix from path
-            path_key = path if not path.endswith('/') else path[:-1]
+            if path not in self._prof_runs_to_files:
+                self._prof_runs_to_files[path] = set()
 
-            if path_key not in self._prof_runs_to_files:
-                self._prof_runs_to_files[path_key] = set()
-
-            prof_runs_to_files[path_key] = self._path_to_file_generator(path, full_path)
+            prof_runs_to_files[path] = self._path_to_file_generator(path, full_path)
 
         return prof_runs_to_files
 

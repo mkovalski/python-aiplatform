@@ -15,7 +15,6 @@
 # limitations under the License.
 #
 
-from enum import Enum
 import logging
 import threading
 from typing import Optional, List
@@ -23,29 +22,24 @@ from werkzeug import serving
 
 
 from google.cloud.aiplatform.training_utils.cloud_training_tools import web_server
-from google.cloud.aiplatform.training_utils.cloud_training_tools.plugins.tf_profiler import tf_profiler
+from google.cloud.aiplatform.training_utils.cloud_training_tools.plugins import (
+    base_plugin,
+)
+from google.cloud.aiplatform.training_utils.cloud_training_tools.plugins.tf_profiler import (
+    tf_profiler,
+)
 
-
-class Plugins(Enum):
-    """List of plugins that are available for cloud_training_tools SDK."""
-
-    TF_PROFILER = 1
-
-
-# To add a new plugin, add the plugin to the enum class and add a mapping to the
-# MAP_TO_PLUGIN dictionary.
-
-MAP_TO_PLUGIN = {Plugins.TF_PROFILER: tf_profiler.TFProfiler}
-ALL_PLUGINS = list(MAP_TO_PLUGIN)
+# Add any additional plugins here.
+ALL_PLUGINS = {tf_profiler.TFProfiler.PLUGIN_NAME: tf_profiler.TFProfiler}
 
 
 def _run_webserver(plugins, port):
     """Run the webserver that hosts the various cloud_training_tools plugins."""
     app = web_server.create_web_server(plugins)
-    serving.run_simple('0.0.0.0', port, app)
+    serving.run_simple("0.0.0.0", port, app)
 
 
-def _run_app_thread(plugins: List[Plugins], port: int) -> None:
+def _run_app_thread(plugins: List[base_plugin.BasePlugin], port: int) -> None:
     """Run the cloud_training_tools web server in a separate thread."""
     daemon = threading.Thread(
         name="cloud_training_tools_server", target=_run_webserver, args=(plugins, port)
@@ -54,7 +48,10 @@ def _run_app_thread(plugins: List[Plugins], port: int) -> None:
     daemon.start()
 
 
-def initialize(plugins: Optional[List[Plugins]] = ALL_PLUGINS, port: int = 6010):
+def initialize(
+    plugins: Optional[List[base_plugin.BasePlugin]] = list(ALL_PLUGINS.keys()),
+    port: int = 6010
+):
     """Initialize the cloud_training_tools SDK.
 
     The SDK will initialize the various diagnostic tools
@@ -62,7 +59,7 @@ def initialize(plugins: Optional[List[Plugins]] = ALL_PLUGINS, port: int = 6010)
 
     Args:
       plugins: A list of plugins used in the cloud_training_tools tool. By default, this
-        defaults to all plugins added to the `MAP_TO_PLUGIN` variable.
+        defaults to all plugins added to the `ALL_PLUGINS` variable.
       port: A port to serve web requests.
     """
 
@@ -70,29 +67,26 @@ def initialize(plugins: Optional[List[Plugins]] = ALL_PLUGINS, port: int = 6010)
 
     plugin_names = set()
 
-    for plugin_name in plugins:
-        plugin = MAP_TO_PLUGIN.get(plugin_name, None)
-        if not plugin:
-            logging.warning("Plugin %s does not exist", plugin_name)
-            continue
-
+    for plugin in plugins:
         if plugin.PLUGIN_NAME in plugin_names:
             logging.warning(
                 "Plugin %s already exists, will not load", plugin.PLUGIN_NAME
             )
             continue
 
+        # Checks for any libraries, versioning, etc. to use plugin
         if not plugin.can_initialize():
-            logging.warning("Failed to initialize %s", plugin_name)
+            logging.warning("Failed to initialize %s", plugin.PLUGIN_NAME)
             continue
 
+        # Anything that must be run before the plugin runs
         plugin.setup()
 
         valid_plugins.append(plugin)
         plugin_names.add(plugin.PLUGIN_NAME)
 
     if not valid_plugins:
-        logging.warning("No valid plugins")
+        logging.warning("No valid plugins, will not start cloud tools")
         return
 
     _run_app_thread(valid_plugins, port)
