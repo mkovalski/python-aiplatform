@@ -50,7 +50,7 @@ def _run_app_thread(plugins: List[base_plugin.BasePlugin], port: int) -> None:
 
 def initialize(
     plugins: Optional[List[base_plugin.BasePlugin]] = list(ALL_PLUGINS.keys()),
-    port: int = 6010
+    port: int = 6010,
 ):
     """Initialize the cloud_training_tools SDK.
 
@@ -71,8 +71,8 @@ def initialize(
         plugin = ALL_PLUGINS.get(plugin_name)
         if not plugin:
             logging.warning(
-                'Plugin %s does not exist. To add it, add it to the `ALL_PLUGINS` variable',
-                plugin_name
+                "Plugin %s does not exist. To add it, add it to the `ALL_PLUGINS` variable",
+                plugin_name,
             )
             continue
 

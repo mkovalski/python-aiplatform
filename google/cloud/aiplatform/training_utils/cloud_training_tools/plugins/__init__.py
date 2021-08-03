@@ -15,8 +15,8 @@
 # limitations under the License.
 #
 
-from google.cloud.aiplatform.training_utils.cloud_training_tools.plugins import base_plugin
-
-__all__ = (
-    "base_plugin",
+from google.cloud.aiplatform.training_utils.cloud_training_tools.plugins import (
+    base_plugin,
 )
+
+__all__ = ("base_plugin",)

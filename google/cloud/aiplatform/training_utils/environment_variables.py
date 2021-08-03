@@ -132,5 +132,3 @@ class EnvironmentVariables:
         """
 
         return os.environ.get("AIP_TENSORBOARD_RESOURCE_NAME")
-
-

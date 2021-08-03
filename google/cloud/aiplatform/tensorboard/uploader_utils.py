@@ -42,12 +42,14 @@ TensorboardServiceClient = tensorboard_service_client_v1beta1.TensorboardService
 
 logger = tb_logging.get_logger()
 
+
 def get_source_bucket(logdir: str) -> storage.Bucket:
     m = re.match(r"gs:\/\/(.*?)(?=\/|$)", logdir)
     if not m:
         return None
     bucket = storage.Client().bucket(m[1])
     return bucket
+
 
 class ExistingResourceNotFoundError(RuntimeError):
     """Resource could not be created or retrieved."""

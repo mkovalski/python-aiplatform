@@ -19,6 +19,4 @@ from google.cloud.aiplatform.training_utils.environment_variables import (
     EnvironmentVariables,
 )
 
-__all__ = (
-    "EnvironmentVariables",
-)
+__all__ = ("EnvironmentVariables",)

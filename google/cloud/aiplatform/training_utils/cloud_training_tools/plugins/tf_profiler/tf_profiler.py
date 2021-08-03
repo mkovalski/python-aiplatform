@@ -87,10 +87,9 @@ def _is_compatible_version(version: Version) -> bool:
     if version.major >= 2 and version.minor >= 2:
         return True
 
-    version_string = '%s.%s.%s' % (version.major, version.minor, version.patch)
+    version_string = "%s.%s.%s" % (version.major, version.minor, version.patch)
     logger.warning(
-        "Tensorflow version %s is not compatible with TF profiler",
-        version_string
+        "Tensorflow version %s is not compatible with TF profiler", version_string
     )
     return False
 
@@ -101,9 +100,7 @@ def _create_profiling_context() -> TBContext:
     context_flags = argparse.Namespace(master_tpu_unsecure_channel=None)
 
     context = TBContext(
-        logdir=_ENV_VARS.tensorboard_log_dir,
-        multiplexer=None,
-        flags=context_flags,
+        logdir=_ENV_VARS.tensorboard_log_dir, multiplexer=None, flags=context_flags,
     )
 
     return context
@@ -176,6 +173,7 @@ def _update_environ(environ) -> str:
 
     return ""
 
+
 def _check_env_vars() -> bool:
     """Determine whether the correct environment variables are set.
 
@@ -197,22 +195,16 @@ def _check_env_vars() -> bool:
         return False
 
     if not _ENV_VARS.tensorboard_api_uri:
-        logger.warning(
-            "Must set the tensorboard API uri."
-        )
+        logger.warning("Must set the tensorboard API uri.")
         return False
 
     if not _ENV_VARS.tensorboard_resource_name:
-        logger.warning(
-            "Must set the tensorboard resource name."
-        )
+        logger.warning("Must set the tensorboard resource name.")
         return False
 
     cluster_spec = json.loads(os.environ.get("CLUSTER_SPEC", "{}"))
     if not cluster_spec:
-        logger.warning(
-            'Environment variable "CLUSTER_SPEC" is not set'
-        )
+        logger.warning('Environment variable "CLUSTER_SPEC" is not set')
         return False
 
     return True
@@ -258,6 +250,7 @@ class TFProfiler(base_plugin.BasePlugin):
     @staticmethod
     def setup() -> None:
         import tensorflow as tf
+
         tf.profiler.experimental.server.start(int(_ENV_VARS.tf_profiler_port))
 
     @staticmethod

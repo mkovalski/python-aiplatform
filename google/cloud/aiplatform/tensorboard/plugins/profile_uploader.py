@@ -281,7 +281,7 @@ class _ProfileRunLoader(object):
 
         for path in paths:
             # Remove trailing slashes in path names
-            path = path if not path.endswith('/') else path[:-1]
+            path = path if not path.endswith("/") else path[:-1]
 
             full_path = os.path.join(self._path, path)
             if not self._path_filter(full_path):
@@ -431,7 +431,6 @@ class _FileRequestSender(object):
             time_series_data=[time_series_data_proto]
         )
 
-
         _prune_empty_time_series_from_blob(request)
         if not request.time_series_data:
             return
@@ -477,11 +476,9 @@ class _FileRequestSender(object):
 
 
 def _get_blob_from_file(fp):
-    m = re.match(r'gs:\/\/.*?\/(.*)', fp)
+    m = re.match(r"gs:\/\/.*?\/(.*)", fp)
     if not m:
-        logger.warning(
-            'Could not get the blob name from file %s', fp
-        )
+        logger.warning("Could not get the blob name from file %s", fp)
         return None
     return m[1]
 
