@@ -188,7 +188,6 @@ class ProfileRequestSender:
         for prof_run, files in prof_run_to_files.items():
             if not files:
                 continue
-
             try:
                 event_time = datetime.datetime.strptime(prof_run, "%Y_%m_%d_%H_%M_%S")
             except ValueError:
@@ -285,10 +284,13 @@ class _ProfileRunLoader(object):
             if not self._path_filter(full_path):
                 continue
 
-            if path not in self._prof_runs_to_files:
-                self._prof_runs_to_files[path] = set()
+            # Remove any suffix from path
+            path_key = path if not path.endswith('/') else path[:-1]
 
-            prof_runs_to_files[path] = self._path_to_file_generator(path, full_path)
+            if path_key not in self._prof_runs_to_files:
+                self._prof_runs_to_files[path_key] = set()
+
+            prof_runs_to_files[path_key] = self._path_to_file_generator(path, full_path)
 
         return prof_runs_to_files
 
