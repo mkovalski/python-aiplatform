@@ -120,17 +120,13 @@ def _host_to_grpc(hostname: str) -> str:
     )
 
 
-def _get_chief_host() -> Optional[str]:
-    """Get the master service address from an environment variable.
-
-    Currently, only profile the master host. Note that the cluster config can have
-    either use 'chief' or 'master' as the config name. We first try chief, fall back
-    to master, and return None if not available.
+def _get_hostnames() -> Optional[str]:
+    """Get the hostnames for all servers running.
 
     Returns:
-        A master host formatted by `_host_to_grpc`.
+        A host formatted by `_host_to_grpc`.
     """
-    cluster_spec = _get_cluster_spec()
+    cluster_spec = _ENV_VARS.cluster_spec
     if not cluster_spec:
         return
 
@@ -138,30 +134,22 @@ def _get_chief_host() -> Optional[str]:
     if not cluster:
         return
 
-    chief_host = cluster.get("chief", []) or cluster.get("master", [])
-    if not chief_host:
-        return
+    hostnames = []
+    for value in cluster.values():
+        hostnames.extend(value)
 
-    chief = chief_host[0]
-
-    return _host_to_grpc(chief)
-
-
-def _get_cluster_spec() -> Optional[Dict[str, str]]:
-    """Get the cluster spec so we can profile multiple workers."""
-    cluster_spec = json.loads(os.environ.get("CLUSTER_SPEC", "{}"))
-    return cluster_spec
+    return ','.join([_host_to_grpc(x) for x in hostnames])
 
 
 def _update_environ(environ) -> str:
     """Add parameters to the query that are retrieved from training side."""
-    host = _get_chief_host()
+    hosts = _get_hostnames()
 
-    if not host:
-        return "Could not get the chief host address."
+    if not hosts:
+        return "Could not get a list of host addresses"
 
     query_dict = {}
-    query_dict["service_addr"] = host
+    query_dict["service_addr"] = hosts
 
     # Update service address and worker list
     # Use parse_qsl and then convert list to dictionary so we can update

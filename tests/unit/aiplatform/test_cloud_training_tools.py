@@ -29,6 +29,7 @@ from werkzeug import wrappers
 from werkzeug.test import EnvironBuilder
 
 from google.cloud.aiplatform import training_utils
+from google.cloud.aiplatform.training_utils.cloud_training_tools.plugins.tf_profiler import tf_profiler
 from google.cloud.aiplatform.training_utils.cloud_training_tools.plugins.tf_profiler.tf_profiler import (
     TFProfiler,
 )
@@ -39,7 +40,9 @@ from google.cloud.aiplatform.training_utils.cloud_training_tools import cloud_in
 
 _ENV_VARS = training_utils.EnvironmentVariables()
 
-_CLUSTER_SPEC = '{"cluster":{"master":["localhost:1234"],"worker":["localhost:3456"]},"environment":"cloud","task":{"type":"master","index":0}}'
+_CLUSTER_SPEC_VM = '{"cluster":{"master":["localhost:1234"]},"environment":"cloud","task":{"type":"master","index":0}}'
+
+_CLUSTER_SPEC_DISTRIB = '{"cluster":{"workerpool0":["host1:2222"],"workerpool1":["host2:2222"]},"environment":"cloud","task":{"type":"workerpool0","index":0},"job":"{\\"python_module\\":\\"\\",\\"package_uris\\":[],\\"job_args\\":[]}"}'
 
 
 @pytest.fixture
@@ -76,9 +79,23 @@ def setupEnvVars():
     os.environ["AIP_TENSORBOARD_LOG_DIR"] = "tmp/"
     os.environ["AIP_TENSORBOARD_API_URI"] = "test_api_uri"
     os.environ["AIP_TENSORBOARD_RESOURCE_NAME"] = "projects/123/region/us-central1/tensorboards/mytb"
-    os.environ["CLUSTER_SPEC"] = _CLUSTER_SPEC
+    os.environ["CLUSTER_SPEC"] = _CLUSTER_SPEC_VM
     os.environ["CLOUD_ML_JOB_ID"] = "myjob"
 
+
+def test_get_hostnames_vm():
+    mock_cluster_spec = {"CLUSTER_SPEC": _CLUSTER_SPEC_VM,
+                         "AIP_TF_PROFILER_PORT": "6009"}
+    with mock.patch.dict(os.environ, mock_cluster_spec):
+        hosts = tf_profiler._get_hostnames()
+    assert hosts == 'grpc://localhost:6009'
+
+def test_get_hostnames_cluster():
+    mock_cluster_spec = {"CLUSTER_SPEC": _CLUSTER_SPEC_DISTRIB,
+                         "AIP_TF_PROFILER_PORT": "6009"}
+    with mock.patch.dict(os.environ, mock_cluster_spec):
+        hosts = tf_profiler._get_hostnames()
+    assert hosts == 'grpc://host1:6009,grpc://host2:6009'
 
 class TestProfilerPlugin:
     # Initializion tests
@@ -208,22 +225,6 @@ class TestProfilerPlugin:
         start_response = None
 
         with mock.patch.dict(os.environ, {"CLUSTER_SPEC": '{"cluster": {}}'}):
-            resp = profiler.capture_profile_wrapper(environ, start_response)
-
-        assert resp.status_code == 500
-
-    @pytest.mark.usefixtures("profile_plugin_mock")
-    @pytest.mark.usefixtures("tensorboard_api_mock")
-    @pytest.mark.usefixtures("setupEnvVars")
-    def testCaptureProfileNoMaster(self):
-        profiler = TFProfiler()
-
-        environ = dict(QUERY_STRING="?service_addr=myhost1,myhost2&someotherdata=5")
-        start_response = None
-
-        with mock.patch.dict(
-            os.environ, {"CLUSTER_SPEC": '{"cluster": {"foo": "bar"}}'}
-        ):
             resp = profiler.capture_profile_wrapper(environ, start_response)
 
         assert resp.status_code == 500
