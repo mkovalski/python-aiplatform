@@ -44,6 +44,7 @@ from google.cloud.aiplatform.compat.types import (
     tensorboard_time_series_v1beta1 as tensorboard_time_series,
 )
 from google.cloud.aiplatform.tensorboard import uploader_utils
+from google.cloud.aiplatform.tensorboard.request_sender_base import BaseBatchedRequestSender
 from google.cloud.aiplatform.tensorboard.uploader_utils import ExperimentNotFoundError
 from google.protobuf import timestamp_pb2 as timestamp
 
@@ -52,7 +53,7 @@ TensorboardServiceClient = tensorboard_service_client_v1beta1.TensorboardService
 logger = tb_logging.get_logger()
 
 
-class ProfileRequestSender:
+class ProfileRequestSender():
     """Helper class for building requests for the profiler plugin.
 
     The profile plugin does not contain values within the events like
@@ -199,7 +200,7 @@ class ProfileRequestSender:
                 event_time = datetime.datetime.now()
             event_timestamp = timestamp.Timestamp().FromDatetime(event_time)
 
-            self._run_to_file_request_sender[run_name].add_files(
+            self._run_to_file_request_sender[run_name]._add_files(
                 files=files,
                 tag=prof_run,
                 plugin="profile",
@@ -295,7 +296,7 @@ class _ProfileRunLoader(object):
         return prof_runs_to_files
 
 
-class _FileRequestSender(object):
+class _FileRequestSender(BaseBatchedRequestSender):
     """Uploader for file based items.
 
     This sender is closely related to the `_BlobRequestSender`, however it sends
@@ -314,34 +315,30 @@ class _FileRequestSender(object):
         max_blob_request_size: int,
         max_blob_size: int,
         blob_storage_bucket: storage.Bucket,
-        source_bucket: storage.Bucket,
         blob_storage_folder: str,
+        source_bucket: storage.Bucket,
         tracker: upload_tracker.UploadTracker,
     ):
-        self._run_resource_id = run_resource_id
-        self._api = api
-        self._rpc_rate_limiter = rpc_rate_limiter
-        self._max_blob_request_size = max_blob_request_size
-        self._max_blob_size = max_blob_size
-        self._tracker = tracker
-        self._time_series_resource_manager = uploader_utils.TimeSeriesResourceManager(
-            run_resource_id, api
+        super().__init__(
+            run_resource_id, api, rpc_rate_limiter, max_blob_request_size, tracker
         )
 
+        self._max_blob_size = max_blob_size
         self._bucket = blob_storage_bucket
         self._folder = blob_storage_folder
         self._source_bucket = source_bucket
-
         self._new_request()
 
     def _new_request(self):
         """Declares the previous event complete."""
+        super()._new_request()
+
         self._files = []
         self._tag = None
         self._plugin = None
         self._event_timestamp = None
 
-    def add_files(
+    def _add_files(
         self,
         files: List[str],
         tag: str,
