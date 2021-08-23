@@ -15,7 +15,6 @@
 # limitations under the License.
 #
 """Uploads a TensorBoard logdir to TensorBoard.gcp."""
-import abc
 import contextlib
 import functools
 import json
@@ -74,6 +73,11 @@ from google.cloud.aiplatform.compat.types import (
 from google.cloud.aiplatform.compat.types import (
     tensorboard_time_series_v1beta1 as tensorboard_time_series,
 )
+from google.cloud.aiplatform.tensorboard import uploader_utils
+from google.cloud.aiplatform.tensorboard.request_sender_base import Sender
+from google.cloud.aiplatform.tensorboard.request_sender_base import BaseBatchedRequestSender
+from google.cloud.aiplatform.tensorboard.uploader_utils import ExperimentNotFoundError
+from google.cloud.aiplatform.tensorboard.plugins import profile_uploader
 from google.protobuf import message
 from google.protobuf import timestamp_pb2 as timestamp
 
@@ -216,7 +220,11 @@ class TensorBoardUploader(object):
         self._description = description
         self._verbosity = verbosity
         self._one_shot = one_shot
-        self._request_sender = None
+
+        self._dispatcher = None
+        self._experiment = None
+        self._run_resource_manager = None
+
         if logdir_poll_rate_limiter is None:
             self._logdir_poll_rate_limiter = util.RateLimiter(
                 _MIN_LOGDIR_POLL_INTERVAL_SECS
@@ -296,7 +304,14 @@ class TensorBoardUploader(object):
 
         experiment = self._create_or_get_experiment()
         self._experiment = experiment
-        self._request_sender = _BatchedRequestSender(
+
+        # Share run resource managers across _BatchedRequestSender and other
+        # senders.
+        self._run_resource_manager = uploader_utils.RunResourceManager(
+            api=self._api, experiment_resource_name=self._experiment.name,
+        )
+
+        request_sender = _BatchedRequestSender(
             self._experiment.name,
             self._api,
             allowed_plugins=self._allowed_plugins,
@@ -307,7 +322,53 @@ class TensorBoardUploader(object):
             blob_storage_bucket=self._blob_storage_bucket,
             blob_storage_folder=self._blob_storage_folder,
             tracker=self._tracker,
+            run_resource_manager=self._run_resource_manager,
         )
+
+        # Add a sender for any events that do not fit within
+        # _BatchedRequestSender scope.
+        additional_senders = self._create_additional_senders()
+
+        # Dispatcher holds the senders and handles where events go.
+        self._dispatcher = _Dispatcher(
+            request_sender=request_sender,
+            additional_senders=additional_senders,
+        )
+
+    def _create_additional_senders(self) -> Dict[str, Sender]:
+        """Create any additional senders for non traditional event files.
+
+        Some items that are used for plugins are not stored within event files,
+        but need to be searched for and stored so that they can be used by the
+        plugin. If there are any items that cannot be searched for via the
+        `_BatchedRequestSender`, add them here.
+
+        Returns:
+            Mapping from plugin name to `Sender`.
+        """
+        additional_senders = {}
+
+        # Only upload profiles in one shot mode for now, since files may not
+        # have been fully written before uploading.
+        if "profile" in self._allowed_plugins:
+            if not self._one_shot:
+                logger.warning("Profile plugin can only be run as one shot.")
+            else:
+                source_bucket = uploader_utils.get_source_bucket(self._logdir)
+                additional_senders["profile"] = profile_uploader.ProfileRequestSender(
+                    self._experiment.name,
+                    self._api,
+                    upload_limits=self._upload_limits,
+                    blob_rpc_rate_limiter=self._blob_rpc_rate_limiter,
+                    blob_storage_bucket=self._blob_storage_bucket,
+                    blob_storage_folder=self._blob_storage_folder,
+                    source_bucket=source_bucket,
+                    tracker=self._tracker,
+                    logdir=self._logdir,
+                    run_resource_manager=self._run_resource_manager,
+                )
+
+        return additional_senders
 
     def get_experiment_resource_name(self):
         return self._experiment.name
@@ -320,7 +381,7 @@ class TensorBoardUploader(object):
           ExperimentNotFoundError: If the experiment is deleted during the
             course of the upload.
         """
-        if self._request_sender is None:
+        if self._dispatcher is None:
             raise RuntimeError("Must call create_experiment() before start_uploading()")
         while True:
             self._logdir_poll_rate_limiter.tick()
@@ -348,19 +409,11 @@ class TensorBoardUploader(object):
                 self._run_name_prefix + k: v for k, v in run_to_events.items()
             }
         with self._tracker.send_tracker():
-            self._request_sender.send_requests(run_to_events)
-
-
-class ExperimentNotFoundError(RuntimeError):
-    pass
+            self._dispatcher.dispatch_requests(run_to_events)
 
 
 class PermissionDeniedError(RuntimeError):
     pass
-
-
-class ExistingResourceNotFoundError(RuntimeError):
-    """Resource could not be created or retrieved."""
 
 
 class _OutOfSpaceError(Exception):
@@ -400,6 +453,7 @@ class _BatchedRequestSender(object):
         blob_storage_bucket: storage.Bucket,
         blob_storage_folder: str,
         tracker: upload_tracker.UploadTracker,
+        run_resource_manager: uploader_utils.RunResourceManager,
     ):
         """Constructs _BatchedRequestSender for the given experiment resource.
 
@@ -417,6 +471,7 @@ class _BatchedRequestSender(object):
             the server, so it is not a concern that we do not explicitly rate-limit
             within the stream here.
           tracker: Upload tracker to track information about uploads.
+          run_resource_manager: Manages creation or retrieving of runs.
         """
         self._experiment_resource_name = experiment_resource_name
         self._api = api
@@ -427,6 +482,7 @@ class _BatchedRequestSender(object):
         self._run_to_tensor_request_sender: Dict[str, _TensorBatchedRequestSender] = {}
         self._run_to_blob_request_sender: Dict[str, _BlobRequestSender] = {}
         self._run_to_run_resource: Dict[str, tensorboard_run.TensorboardRun] = {}
+        self._run_resource_manager = run_resource_manager
         self._scalar_request_sender_factory = functools.partial(
             _ScalarBatchedRequestSender,
             api=api,
@@ -453,87 +509,96 @@ class _BatchedRequestSender(object):
             tracker=self._tracker,
         )
 
-    def send_requests(
-        self, run_to_events: Dict[str, Generator[tf.compat.v1.Event, None, None]]
+    def send_request(
+        self,
+        run_name: str,
+        event: tf.compat.v1.Event,
+        value: tf.compat.v1.Summary.Value,
     ):
-        """Accepts a stream of TF events and sends batched write RPCs.
+        """Accepts a TF event and value and accumulates events per data type.
 
         Each sent request will be batched, the size of each batch depending on
         the type of data (Scalar vs Tensor vs Blob) being sent.
 
         Args:
-          run_to_events: Mapping from run name to generator of `tf.compat.v1.Event`
-            values, as returned by `LogdirLoader.get_run_events`.
+          run_name: Name of the run retrieved by `LogdirLoader.get_run_events`
+          event: The `tf.compat.v1.Event` for the run
+          value: A single `tf.compat.v1.Summary.Value` from the event, where
+            there can be multiple values per event.
 
         Raises:
           RuntimeError: If no progress can be made because even a single
           point is too large (say, due to a gigabyte-long tag name).
         """
 
-        for (run_name, event, value) in self._run_values(run_to_events):
-            time_series_key = (run_name, value.tag)
+        time_series_key = (run_name, value.tag)
 
-            # The metadata for a time series is memorized on the first event.
-            # If later events arrive with a mismatching plugin_name, they are
-            # ignored with a warning.
-            metadata = self._tag_metadata.get(time_series_key)
-            first_in_time_series = False
-            if metadata is None:
-                first_in_time_series = True
-                metadata = value.metadata
-                self._tag_metadata[time_series_key] = metadata
+        # The metadata for a time series is memorized on the first event.
+        # If later events arrive with a mismatching plugin_name, they are
+        # ignored with a warning.
+        metadata = self._tag_metadata.get(time_series_key)
+        first_in_time_series = False
+        if metadata is None:
+            first_in_time_series = True
+            metadata = value.metadata
+            self._tag_metadata[time_series_key] = metadata
 
-            plugin_name = metadata.plugin_data.plugin_name
-            if value.HasField("metadata") and (
-                plugin_name != value.metadata.plugin_data.plugin_name
-            ):
-                logger.warning(
-                    "Mismatching plugin names for %s.  Expected %s, found %s.",
+        plugin_name = metadata.plugin_data.plugin_name
+        if value.HasField("metadata") and (
+            plugin_name != value.metadata.plugin_data.plugin_name
+        ):
+            logger.warning(
+                "Mismatching plugin names for %s.  Expected %s, found %s.",
+                time_series_key,
+                metadata.plugin_data.plugin_name,
+                value.metadata.plugin_data.plugin_name,
+            )
+            return
+        if plugin_name not in self._allowed_plugins:
+            if first_in_time_series:
+                logger.info(
+                    "Skipping time series %r with unsupported plugin name %r",
                     time_series_key,
-                    metadata.plugin_data.plugin_name,
-                    value.metadata.plugin_data.plugin_name,
+                    plugin_name,
                 )
-                continue
-            if plugin_name not in self._allowed_plugins:
-                if first_in_time_series:
-                    logger.info(
-                        "Skipping time series %r with unsupported plugin name %r",
-                        time_series_key,
-                        plugin_name,
-                    )
-                continue
-            self._tracker.add_plugin_name(plugin_name)
-            # If this is the first time we've seen this run create a new run resource
-            # and an associated request sender.
-            if run_name not in self._run_to_run_resource:
-                self._create_or_get_run_resource(run_name)
-                self._run_to_request_sender[
-                    run_name
-                ] = self._scalar_request_sender_factory(
-                    self._run_to_run_resource[run_name].name
-                )
-                self._run_to_tensor_request_sender[
-                    run_name
-                ] = self._tensor_request_sender_factory(
-                    self._run_to_run_resource[run_name].name
-                )
-                self._run_to_blob_request_sender[
-                    run_name
-                ] = self._blob_request_sender_factory(
-                    self._run_to_run_resource[run_name].name
-                )
+            return
+        self._tracker.add_plugin_name(plugin_name)
+        # If this is the first time we've seen this run create a new run resource
+        # and an associated request sender.
+        if run_name not in self._run_resource_manager.run_to_run_resource:
+            self._run_resource_manager.create_or_get_run_resource(run_name)
 
-            if metadata.data_class == summary_pb2.DATA_CLASS_SCALAR:
-                self._run_to_request_sender[run_name].add_event(event, value, metadata)
-            elif metadata.data_class == summary_pb2.DATA_CLASS_TENSOR:
-                self._run_to_tensor_request_sender[run_name].add_event(
-                    event, value, metadata
-                )
-            elif metadata.data_class == summary_pb2.DATA_CLASS_BLOB_SEQUENCE:
-                self._run_to_blob_request_sender[run_name].add_event(
-                    event, value, metadata
-                )
+        # Run resource manager is a shared object so runs may have been created
+        # by another requested sender. Check each sender individually.
+        if run_name not in self._run_to_request_sender:
+            self._run_to_request_sender[run_name] = self._scalar_request_sender_factory(
+                self._run_resource_manager.run_to_run_resource[run_name].name
+            )
 
+        if run_name not in self._run_to_tensor_request_sender:
+            self._run_to_tensor_request_sender[
+                run_name
+            ] = self._tensor_request_sender_factory(
+                self._run_resource_manager.run_to_run_resource[run_name].name
+            )
+
+        if run_name not in self._run_to_blob_request_sender:
+            self._run_to_blob_request_sender[
+                run_name
+            ] = self._blob_request_sender_factory(
+                self._run_resource_manager.run_to_run_resource[run_name].name
+            )
+
+        if metadata.data_class == summary_pb2.DATA_CLASS_SCALAR:
+            self._run_to_request_sender[run_name].add_event(event, value, metadata)
+        elif metadata.data_class == summary_pb2.DATA_CLASS_TENSOR:
+            self._run_to_tensor_request_sender[run_name].add_event(
+                event, value, metadata
+            )
+        elif metadata.data_class == summary_pb2.DATA_CLASS_BLOB_SEQUENCE:
+            self._run_to_blob_request_sender[run_name].add_event(event, value, metadata)
+
+    def flush(self):
         for scalar_request_sender in self._run_to_request_sender.values():
             scalar_request_sender.flush()
 
@@ -543,46 +608,49 @@ class _BatchedRequestSender(object):
         for blob_request_sender in self._run_to_blob_request_sender.values():
             blob_request_sender.flush()
 
-    def _create_or_get_run_resource(self, run_name: str):
-        """Creates a new Run Resource in current Tensorboard Experiment resource.
+
+class _Dispatcher(object):
+    """Dispatch the requests to the correct request senders."""
+
+    def __init__(
+        self,
+        request_sender: _BatchedRequestSender,
+        additional_senders: Dict[str, Sender] = {},
+    ):
+        """Construct a _Dispatcher object for the TensorboardUploader.
 
         Args:
-          run_name: The display name of this run.
+            request_sender: A `_BatchedRequestSender` for handling events.
+            additional_senders: A dictionary mapping a plugin name to an
+                `_Sender` object.
         """
-        tb_run = tensorboard_run.TensorboardRun()
-        tb_run.display_name = run_name
-        try:
-            tb_run = self._api.create_tensorboard_run(
-                parent=self._experiment_resource_name,
-                tensorboard_run=tb_run,
-                tensorboard_run_id=str(uuid.uuid4()),
-            )
-        except exceptions.InvalidArgument as e:
-            # If the run name already exists then retrieve it
-            if "already exist" in e.message:
-                runs_pages = self._api.list_tensorboard_runs(
-                    parent=self._experiment_resource_name
-                )
-                for tb_run in runs_pages:
-                    if tb_run.display_name == run_name:
-                        break
+        self._request_sender = request_sender
+        self._additional_senders = additional_senders
 
-                if tb_run.display_name != run_name:
-                    raise ExistingResourceNotFoundError(
-                        "Run with name %s already exists but is not resource list."
-                        % run_name
-                    )
-            else:
-                raise
+    def _dispatch_additional_senders(
+        self, run_name: str,
+    ):
+        """Dispatch events to any additional senders.
 
-        self._run_to_run_resource[run_name] = tb_run
+        These senders process non traditional event files for a specific plugin
+        and use a send_request function to process events.
 
-    def _run_values(
+        Args:
+            run_name: String of current training run
+        """
+        for key, sender in self._additional_senders.items():
+            sender.send_request(run_name)
+
+    def dispatch_requests(
         self, run_to_events: Dict[str, Generator[tf.compat.v1.Event, None, None]]
-    ) -> Generator[
-        Tuple[str, tf.compat.v1.Event, tf.compat.v1.Summary.Value], None, None
-    ]:
-        """Helper generator to create a single stream of work items.
+    ):
+        """Routes events to the appropriate sender.
+
+        Takes a mapping from strings to an event generator. The function routes
+        any events that should be handled by the `_BatchedRequestSender` and
+        non-traditional events that need to be handled differently, which are
+        stored as "_additional_senders". The `_request_sender` is then flushed
+        after all events are added.
 
         Note that `dataclass_compat` may emit multiple variants of
         the same event, for backwards compatibility.  Thus this stream should
@@ -598,318 +666,17 @@ class _BatchedRequestSender(object):
         Args:
           run_to_events: Mapping from run name to generator of `tf.compat.v1.Event`
             values, as returned by `LogdirLoader.get_run_events`.
-
-        Yields:
-          Tuple of run name, tf.compat.v1.Event, tf.compat.v1.Summary.Value per
-          value.
         """
-        # Note that this join in principle has deletion anomalies: if the input
-        # stream contains runs with no events, or events with no values, we'll
-        # lose that information. This is not a problem: we would need to prune
-        # such data from the request anyway.
         for (run_name, events) in run_to_events.items():
+            self._dispatch_additional_senders(run_name)
             for event in events:
                 _filter_graph_defs(event)
                 for value in event.summary.value:
-                    yield (run_name, event, value)
+                    self._request_sender.send_request(run_name, event, value)
+        self._request_sender.flush()
 
 
-class _TimeSeriesResourceManager(object):
-    """Helper class managing Time Series resources."""
-
-    def __init__(self, run_resource_id: str, api: TensorboardServiceClient):
-        """Constructor for _TimeSeriesResourceManager.
-
-        Args:
-          run_resource_id: The resource id for the run with the following format
-            projects/{project}/locations/{location}/tensorboards/{tensorboard}/experiments/{experiment}/runs/{run}
-          api: TensorboardServiceStub
-        """
-        self._run_resource_id = run_resource_id
-        self._api = api
-        self._tag_to_time_series_proto: Dict[
-            str, tensorboard_time_series.TensorboardTimeSeries
-        ] = {}
-
-    def get_or_create(
-        self,
-        tag_name: str,
-        time_series_resource_creator: Callable[
-            [], tensorboard_time_series.TensorboardTimeSeries
-        ],
-    ) -> tensorboard_time_series.TensorboardTimeSeries:
-        """get a time series resource with given tag_name, and create a new one on
-
-        OnePlatform if not present.
-
-        Args:
-          tag_name: The tag name of the time series in the Tensorboard log dir.
-          time_series_resource_creator: A callable that produces a TimeSeries for
-            creation.
-        """
-        if tag_name in self._tag_to_time_series_proto:
-            return self._tag_to_time_series_proto[tag_name]
-
-        time_series = time_series_resource_creator()
-        time_series.display_name = tag_name
-        try:
-            time_series = self._api.create_tensorboard_time_series(
-                parent=self._run_resource_id, tensorboard_time_series=time_series
-            )
-        except exceptions.InvalidArgument as e:
-            # If the time series display name already exists then retrieve it
-            if "already exist" in e.message:
-                list_of_time_series = self._api.list_tensorboard_time_series(
-                    request=tensorboard_service.ListTensorboardTimeSeriesRequest(
-                        parent=self._run_resource_id,
-                        filter="display_name = {}".format(json.dumps(str(tag_name))),
-                    )
-                )
-                num = 0
-                for ts in list_of_time_series:
-                    time_series = ts
-                    num += 1
-                    break
-                if num != 1:
-                    raise ValueError(
-                        "More than one time series resource found with display_name: {}".format(
-                            tag_name
-                        )
-                    )
-            else:
-                raise
-
-        self._tag_to_time_series_proto[tag_name] = time_series
-        return time_series
-
-
-class _BaseBatchedRequestSender(object):
-    """Helper class for building requests that fit under a size limit.
-
-    This class accumulates a current request.  `add_event(...)` may or may not
-    send the request (and start a new one).  After all `add_event(...)` calls
-    are complete, a final call to `flush()` is needed to send the final request.
-
-    This class is not threadsafe. Use external synchronization if calling its
-    methods concurrently.
-    """
-
-    def __init__(
-        self,
-        run_resource_id: str,
-        api: TensorboardServiceClient,
-        rpc_rate_limiter: util.RateLimiter,
-        max_request_size: int,
-        tracker: upload_tracker.UploadTracker,
-    ):
-        """Constructor for _BaseBatchedRequestSender.
-
-        Args:
-          run_resource_id: The resource id for the run with the following format
-            projects/{project}/locations/{location}/tensorboards/{tensorboard}/experiments/{experiment}/runs/{run}
-          api: TensorboardServiceStub
-          rpc_rate_limiter: until.RateLimiter to limit rate of this request sender
-          max_request_size: max number of bytes to send
-          tracker:
-        """
-        self._run_resource_id = run_resource_id
-        self._api = api
-        self._rpc_rate_limiter = rpc_rate_limiter
-        self._byte_budget_manager = _ByteBudgetManager(max_request_size)
-        self._tracker = tracker
-
-        # cache: map from Tensorboard tag to TimeSeriesData
-        # cleared whenever a new request is created
-        self._tag_to_time_series_data: Dict[str, tensorboard_data.TimeSeriesData] = {}
-
-        self._time_series_resource_manager = _TimeSeriesResourceManager(
-            self._run_resource_id, self._api
-        )
-        self._new_request()
-
-    def _new_request(self):
-        """Allocates a new request and refreshes the budget."""
-        self._request = tensorboard_service.WriteTensorboardRunDataRequest()
-        self._tag_to_time_series_data.clear()
-        self._num_values = 0
-        self._request.tensorboard_run = self._run_resource_id
-        self._byte_budget_manager.reset(self._request)
-
-    def add_event(
-        self,
-        event: tf.compat.v1.Event,
-        value: tf.compat.v1.Summary.Value,
-        metadata: tf.compat.v1.SummaryMetadata,
-    ):
-        """Attempts to add the given event to the current request.
-
-        If the event cannot be added to the current request because the byte
-        budget is exhausted, the request is flushed, and the event is added
-        to the next request.
-
-        Args:
-          event: The tf.compat.v1.Event event containing the value.
-          value: A scalar tf.compat.v1.Summary.Value.
-          metadata: SummaryMetadata of the event.
-        """
-        try:
-            self._add_event_internal(event, value, metadata)
-        except _OutOfSpaceError:
-            self.flush()
-            # Try again.  This attempt should never produce OutOfSpaceError
-            # because we just flushed.
-            try:
-                self._add_event_internal(event, value, metadata)
-            except _OutOfSpaceError:
-                raise RuntimeError("add_event failed despite flush")
-
-    def _add_event_internal(
-        self,
-        event: tf.compat.v1.Event,
-        value: tf.compat.v1.Summary.Value,
-        metadata: tf.compat.v1.SummaryMetadata,
-    ):
-        self._num_values += 1
-        time_series_data_proto = self._tag_to_time_series_data.get(value.tag)
-        if time_series_data_proto is None:
-            time_series_data_proto = self._create_time_series_data(value.tag, metadata)
-        self._create_point(time_series_data_proto, event, value, metadata)
-
-    def flush(self):
-        """Sends the active request after removing empty runs and tags.
-
-        Starts a new, empty active request.
-        """
-        request = self._request
-        request.time_series_data = list(self._tag_to_time_series_data.values())
-        _prune_empty_time_series(request)
-        if not request.time_series_data:
-            return
-
-        self._rpc_rate_limiter.tick()
-
-        with _request_logger(request):
-            with self._get_tracker():
-                try:
-                    self._api.write_tensorboard_run_data(
-                        tensorboard_run=self._run_resource_id,
-                        time_series_data=request.time_series_data,
-                    )
-                except grpc.RpcError as e:
-                    if (
-                        hasattr(e, "code")
-                        and getattr(e, "code")() == grpc.StatusCode.NOT_FOUND
-                    ):
-                        raise ExperimentNotFoundError()
-                    logger.error("Upload call failed with error %s", e)
-
-        self._new_request()
-
-    def _create_time_series_data(
-        self, tag_name: str, metadata: tf.compat.v1.SummaryMetadata
-    ) -> tensorboard_data.TimeSeriesData:
-        """Adds a time_series for the tag_name, if there's space.
-
-        Args:
-          tag_name: String name of the tag to add (as `value.tag`).
-
-        Returns:
-          The TimeSeriesData in _request proto with the given tag name.
-
-        Raises:
-          _OutOfSpaceError: If adding the tag would exceed the remaining
-            request budget.
-        """
-        time_series_data_proto = tensorboard_data.TimeSeriesData(
-            tensorboard_time_series_id=self._time_series_resource_manager.get_or_create(
-                tag_name,
-                lambda: tensorboard_time_series.TensorboardTimeSeries(
-                    display_name=tag_name,
-                    value_type=self._value_type,
-                    plugin_name=metadata.plugin_data.plugin_name,
-                    plugin_data=metadata.plugin_data.content,
-                ),
-            ).name.split("/")[-1],
-            value_type=self._value_type,
-        )
-
-        self._byte_budget_manager.add_time_series(time_series_data_proto)
-        self._tag_to_time_series_data[tag_name] = time_series_data_proto
-        return time_series_data_proto
-
-    def _create_point(
-        self,
-        time_series_proto: tensorboard_data.TimeSeriesData,
-        event: tf.compat.v1.Event,
-        value: tf.compat.v1.Summary.Value,
-        metadata: tf.compat.v1.SummaryMetadata,
-    ):
-        """Adds a scalar point to the given tag, if there's space.
-
-        Args:
-          time_series_proto: TimeSeriesData proto to which to add a point.
-          event: Enclosing `Event` proto with the step and wall time data.
-          value: `Summary.Value` proto.
-          metadata: SummaryMetadata of the event.
-
-        Raises:
-          _OutOfSpaceError: If adding the point would exceed the remaining
-            request budget.
-        """
-        point = self._create_data_point(event, value, metadata)
-
-        if not self._validate(point, event, value):
-            return
-
-        time_series_proto.values.extend([point])
-        try:
-            self._byte_budget_manager.add_point(point)
-        except _OutOfSpaceError:
-            time_series_proto.values.pop()
-            raise
-
-    @abc.abstractmethod
-    def _get_tracker(self) -> ContextManager:
-        """
-        :return: tracker function from upload_tracker.UploadTracker
-        """
-        pass
-
-    @property
-    @classmethod
-    @abc.abstractmethod
-    def _value_type(cls,) -> tensorboard_time_series.TensorboardTimeSeries.ValueType:
-        """
-        :return: Value type of the time series.
-        """
-        pass
-
-    @abc.abstractmethod
-    def _create_data_point(
-        self,
-        event: tf.compat.v1.Event,
-        value: tf.compat.v1.Summary.Value,
-        metadata: tf.compat.v1.SummaryMetadata,
-    ) -> tensorboard_data.TimeSeriesDataPoint:
-        """
-        Creates data point protos for sending to the OnePlatform API.
-        """
-        pass
-
-    def _validate(
-        self,
-        point: tensorboard_data.TimeSeriesDataPoint,
-        event: tf.compat.v1.Event,
-        value: tf.compat.v1.Summary.Value,
-    ):
-        """
-        Validations performed before including the data point to be sent to the
-        OnePlatform API.
-        """
-        return True
-
-
-class _ScalarBatchedRequestSender(_BaseBatchedRequestSender):
+class _ScalarBatchedRequestSender(BaseBatchedRequestSender):
     """Helper class for building requests that fit under a size limit.
 
     This class accumulates a current request.  `add_event(...)` may or may not
@@ -966,7 +733,7 @@ class _ScalarBatchedRequestSender(_BaseBatchedRequestSender):
         )
 
 
-class _TensorBatchedRequestSender(_BaseBatchedRequestSender):
+class _TensorBatchedRequestSender(BaseBatchedRequestSender):
     """Helper class for building WriteTensor() requests that fit under a size limit.
 
     This class accumulates a current request.  `add_event(...)` may or may not
@@ -1067,96 +834,7 @@ class _TensorBatchedRequestSender(_BaseBatchedRequestSender):
         return True
 
 
-class _ByteBudgetManager(object):
-    """Helper class for managing the request byte budget for certain RPCs.
-
-    This should be used for RPCs that organize data by Runs, Tags, and Points,
-    specifically WriteScalar and WriteTensor.
-
-    Any call to add_time_series() or add_point() may raise an
-    _OutOfSpaceError, which is non-fatal. It signals to the caller that they
-    should flush the current request and begin a new one.
-
-    For more information on the protocol buffer encoding and how byte cost
-    can be calculated, visit:
-
-    https://developers.google.com/protocol-buffers/docs/encoding
-    """
-
-    def __init__(self, max_bytes: int):
-        # The remaining number of bytes that we may yet add to the request.
-        self._byte_budget = None  # type: int
-        self._max_bytes = max_bytes
-
-    def reset(self, base_request: tensorboard_service.WriteTensorboardRunDataRequest):
-        """Resets the byte budget and calculates the cost of the base request.
-
-        Args:
-          base_request: Base request.
-
-        Raises:
-          _OutOfSpaceError: If the size of the request exceeds the entire
-            request byte budget.
-        """
-        self._byte_budget = self._max_bytes
-        self._byte_budget -= (
-            base_request._pb.ByteSize()
-        )  # pylint: disable=protected-access
-        if self._byte_budget < 0:
-            raise _OutOfSpaceError("Byte budget too small for base request")
-
-    def add_time_series(self, time_series_proto: tensorboard_data.TimeSeriesData):
-        """Integrates the cost of a tag proto into the byte budget.
-
-        Args:
-          time_series_proto: The proto representing a time series.
-
-        Raises:
-          _OutOfSpaceError: If adding the time_series would exceed the remaining
-          request budget.
-        """
-        cost = (
-            # The size of the tag proto without any tag fields set.
-            time_series_proto._pb.ByteSize()  # pylint: disable=protected-access
-            # The size of the varint that describes the length of the tag
-            # proto. We can't yet know the final size of the tag proto -- we
-            # haven't yet set any point values -- so we can't know the final
-            # size of this length varint. We conservatively assume it is maximum
-            # size.
-            + _MAX_VARINT64_LENGTH_BYTES
-            # The size of the proto key.
-            + 1
-        )
-        if cost > self._byte_budget:
-            raise _OutOfSpaceError()
-        self._byte_budget -= cost
-
-    def add_point(self, point_proto: tensorboard_data.TimeSeriesDataPoint):
-        """Integrates the cost of a point proto into the byte budget.
-
-        Args:
-          point_proto: The proto representing a point.
-
-        Raises:
-          _OutOfSpaceError: If adding the point would exceed the remaining request
-           budget.
-        """
-        submessage_cost = point_proto._pb.ByteSize()  # pylint: disable=protected-access
-        cost = (
-            # The size of the point proto.
-            submessage_cost
-            # The size of the varint that describes the length of the point
-            # proto.
-            + _varint_cost(submessage_cost)
-            # The size of the proto key.
-            + 1
-        )
-        if cost > self._byte_budget:
-            raise _OutOfSpaceError()
-        self._byte_budget -= cost
-
-
-class _BlobRequestSender(_BaseBatchedRequestSender):
+class _BlobRequestSender(BaseBatchedRequestSender):
     """Uploader for blob-type event data.
 
     Unlike the other types, this class does not accumulate events in batches;
@@ -1278,19 +956,6 @@ class _BlobRequestSender(_BaseBatchedRequestSender):
         return blob_id
 
 
-@contextlib.contextmanager
-def _request_logger(request: tensorboard_service.WriteTensorboardRunDataRequest):
-    """Context manager to log request size and duration."""
-    upload_start_time = time.time()
-    request_bytes = request._pb.ByteSize()  # pylint: disable=protected-access
-    logger.info("Trying request of %d bytes", request_bytes)
-    yield
-    upload_duration_secs = time.time() - upload_start_time
-    logger.info(
-        "Upload of (%d bytes) took %.3f seconds", request_bytes, upload_duration_secs,
-    )
-
-
 def _varint_cost(n: int):
     """Computes the size of `n` encoded as an unsigned base-128 varint.
 
@@ -1318,6 +983,17 @@ def _prune_empty_time_series(
         list(enumerate(request.time_series_data))
     ):
         if not time_series_data.values:
+            del request.time_series_data[time_series_idx]
+
+
+def _prune_empty_time_series_from_blob(
+    request: tensorboard_service.WriteTensorboardRunDataRequest,
+):
+    """Removes empty time_series from request if there are no blob files."""
+    for (time_series_idx, time_series_data) in reversed(
+        list(enumerate(request.time_series_data))
+    ):
+        if not any(x.blobs for x in time_series_data.values):
             del request.time_series_data[time_series_idx]
 
 
