@@ -55,6 +55,7 @@ _TEST_CLUSTER_SPEC = """{
     }
 }"""
 _TEST_AIP_TF_PROFILER_PORT = "1234"
+_TEST_AIP_HTTP_HANDLER_PORT = "5678"
 _TEST_TENSORBOARD_API_URI = "http://testuri.com"
 _TEST_TENSORBOARD_RESOURCE_NAME = (
     "projects/myproj/locations/us-central1/tensorboards/1234"
@@ -73,6 +74,7 @@ class TestTrainingUtils:
             "AIP_CHECKPOINT_DIR": _TEST_CHECKPOINT_DIR,
             "AIP_TENSORBOARD_LOG_DIR": _TEST_TENSORBOARD_LOG_DIR,
             "AIP_TF_PROFILER_PORT": _TEST_AIP_TF_PROFILER_PORT,
+            "AIP_HTTP_HANDLER_PORT": _TEST_AIP_HTTP_HANDLER_PORT,
             "AIP_TENSORBOARD_API_URI": _TEST_TENSORBOARD_API_URI,
             "AIP_TENSORBOARD_RESOURCE_NAME": _TEST_TENSORBOARD_RESOURCE_NAME,
             "CLOUD_ML_JOB_ID": _TEST_CLOUD_ML_JOB_ID,
@@ -162,6 +164,15 @@ class TestTrainingUtils:
     def test_tf_profiler_port_none(self):
         reload(environment_variables)
         assert environment_variables.tf_profiler_port is None
+
+    @pytest.mark.usefixtures("mock_environment")
+    def test_http_handler_profiler_port(self):
+        reload(environment_variables)
+        assert environment_variables.http_handler_port == _TEST_AIP_HTTP_HANDLER_PORT
+
+    def test_http_handler_port_none(self):
+        reload(environment_variables)
+        assert environment_variables.http_handler_port is None
 
     @pytest.mark.usefixtures("mock_environment")
     def test_tensorboard_api_uri(self):

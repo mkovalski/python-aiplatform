@@ -74,3 +74,6 @@ tensorboard_resource_name = os.environ.get("AIP_TENSORBOARD_RESOURCE_NAME")
 
 # The name given to the training job.
 cloud_ml_job_id = os.environ.get("CLOUD_ML_JOB_ID")
+
+# The port to host the profiling webserver on.
+http_handler_port = os.environ.get("AIP_HTTP_HANDLER_PORT")
