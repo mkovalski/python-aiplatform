@@ -23,7 +23,7 @@ import abc
 
 from google.auth import credentials as auth_credentials
 from google.cloud.aiplatform import base
-from google.cloud.aiplatform import constants
+from google.cloud.aiplatform.constants import base as constants
 from google.cloud.aiplatform import datasets
 from google.cloud.aiplatform import initializer
 from google.cloud.aiplatform import models
@@ -3930,7 +3930,7 @@ class AutoMLForecastingTrainingJob(_TrainingJob):
             Supported only for tabular Datasets.
 
         Args:
-            dataset (datasets.Dataset):
+            dataset (datasets.TimeSeriesDataset):
                 Required. The dataset within the same Project from which data will be used to train the Model. The
                 Dataset must use schema compatible with Model being trained,
                 and what is compatible should be described in the used
@@ -4136,7 +4136,7 @@ class AutoMLForecastingTrainingJob(_TrainingJob):
         10% for validation, and 10% for test.
 
         Args:
-            dataset (datasets.Dataset):
+            dataset (datasets.TimeSeriesDataset):
                 Required. The dataset within the same Project from which data will be used to train the Model. The
                 Dataset must use schema compatible with Model being trained,
                 and what is compatible should be described in the used
@@ -4352,7 +4352,7 @@ class AutoMLForecastingTrainingJob(_TrainingJob):
             Supported only for tabular Datasets.
 
         Args:
-            dataset (datasets.Dataset):
+            dataset (datasets.TimeSeriesDataset):
                 Required. The dataset within the same Project from which data will be used to train the Model. The
                 Dataset must use schema compatible with Model being trained,
                 and what is compatible should be described in the used
